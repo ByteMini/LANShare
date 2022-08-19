@@ -1,10 +1,8 @@
 package main
 
-func main() {
-<<<<<<< HEAD
+import "fmt"
 
-=======
+func main() {
 	fmt.Println("lANShare")
 	fmt.Println("hoo")
->>>>>>> Test
 }
