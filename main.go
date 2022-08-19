@@ -1,1 +1,5 @@
 package LANShare
+
+func main() {
+
+}
