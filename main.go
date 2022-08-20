@@ -1,9 +1,8 @@
 package main
 
-import "fmt"
+import "LANShare/scan"
 
 func main() {
-	fmt.Println("lANShare")
-	fmt.Println("hoo")
-	fmt.Println("Just Test")
+	device := "\\Device\\NPF_{3B81C1F8-E4DD-4C8A-BAF7-BC7DD760D800}"
+	scan.GetPacket(device)
 }
