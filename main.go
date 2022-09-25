@@ -1,8 +1,8 @@
 package main
 
-import "LANShare/scan"
+import "LANShare/server"
 
 func main() {
-	device := "\\Device\\NPF_{3B81C1F8-E4DD-4C8A-BAF7-BC7DD760D800}"
-	scan.GetPacket(device)
+	server := server.NewServer("192.168.3.79", 8888)
+	server.Start()
 }
