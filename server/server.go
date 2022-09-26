@@ -1,11 +1,11 @@
 package server
 
 import (
-	"LANShare/client"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // 服务器模型
@@ -13,8 +13,8 @@ type Server struct {
 	Ip   string
 	Port int
 	// 在线用户列表
-	OnlineMap map[string]*client.User
-	mapLock   sync.RWMutex
+	OnlineMap map[string]*User
+	MapLock   sync.RWMutex
 
 	// 消息广播的channel
 	Message chan string
@@ -25,7 +25,7 @@ func NewServer(ip string, port int) *Server {
 	return &Server{
 		Ip:        ip,
 		Port:      port,
-		OnlineMap: make(map[string]*client.User),
+		OnlineMap: make(map[string]*User),
 		Message:   make(chan string),
 	}
 }
@@ -61,15 +61,13 @@ func (s *Server) Start() {
 // 处理服务器连接
 func (s *Server) Handler(conn net.Conn) {
 	// 为新的连接创建一个新的用户实例
-	user := client.NewUser(conn)
+	user := NewUser(conn, s)
 
-	// 将新的用户写入用户列表中
-	s.mapLock.Lock()
-	s.OnlineMap[user.Name] = user
-	s.mapLock.Unlock()
+	// 用户上线
+	user.Online()
 
-	// 用户上线消息写入广播消息管道
-	go s.BroadCast(user, "已上线")
+	// 监听用户是否活跃的channel
+	isLive := make(chan bool)
 
 	// 读取客户端发送的消息
 	go func() {
@@ -77,7 +75,7 @@ func (s *Server) Handler(conn net.Conn) {
 		for {
 			n, err := conn.Read(buf)
 			if n == 0 {
-				s.BroadCast(user, "下线")
+				user.Offline()
 				return
 			}
 
@@ -88,17 +86,35 @@ func (s *Server) Handler(conn net.Conn) {
 
 			// 读取用户消息内容，去除'\n'
 			msg := string(buf[:n-1])
-			s.BroadCast(user, msg)
+			user.DoMessage(msg)
+
+			// 用户的任意消息，代表用户活跃
+			isLive <- true
 		}
 	}()
 
 	// 阻塞当前handler
-	select {}
+	for {
+		select {
+		case <-isLive:
 
+		case <-time.After(300 * time.Second):
+			user.ReceiveMsg("你被踢了")
+
+			// 销毁资源
+			close(user.C)
+
+			// 关闭连接
+			user.conn.Close()
+
+			// 返回
+			return
+		}
+	}
 }
 
 // 向广播消息管道写入内容
-func (s *Server) BroadCast(user *client.User, msg string) {
+func (s *Server) BroadCast(user *User, msg string) {
 	sendMsg := "[" + user.Addr + "]" + user.Name + ":" + msg
 
 	s.Message <- sendMsg
@@ -111,10 +127,10 @@ func (s *Server) ListenMessage() {
 		msg := <-s.Message
 
 		// 将消息发给所有在线用户
-		s.mapLock.Lock()
+		s.MapLock.Lock()
 		for _, cli := range s.OnlineMap {
 			cli.C <- msg
 		}
-		s.mapLock.Unlock()
+		s.MapLock.Unlock()
 	}
 }
