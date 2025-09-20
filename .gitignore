@@ -1,0 +1,36 @@
+# 构建输出
+build/
+*.exe
+*.app
+*.deb
+*.rpm
+
+# Go相关
+*.mod.sum
+vendor/
+
+# IDE相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+
+# 测试覆盖率
+*.out
+coverage.html
+
+# 依赖管理
+go.work
+go.work.sum
