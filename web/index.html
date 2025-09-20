@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LANShare P2P - {{.Name}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>LANShare P2P</h1>
+            <p>用户: {{.Name}} | IP: {{.LocalIP}}:{{.LocalPort}}</p>
+        </div>
+        <div class="main">
+            <div class="sidebar">
+                <div class="status">
+                    状态: 已连接
+                </div>
+                <h3>在线用户</h3>
+                <ul class="users-list" id="usersList">
+                    <li class="own">{{.Name}} (自己)</li>
+                </ul>
+                <div class="commands">
+                    <h4>命令说明</h4>
+                    <ul>
+                        <li>/to 用户名 消息 - 私聊</li>
+                        <li>/name 新名称 - 改名</li>
+                        <li>直接输入 - 公聊</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="chat-area">
+                <div class="messages" id="messages">
+                    <!-- 消息将在这里显示 -->
+                </div>
+                <div class="input-area">
+                    <div class="input-group">
+                        <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)">
+                        <button onclick="sendMessage()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
