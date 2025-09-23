@@ -3,47 +3,118 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#007AFF">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>LANShare P2P - {{.Name}}</title>
     <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
 </head>
 <body>
     <div class="container">
+        <!-- 苹果风格头部 -->
         <div class="header">
             <h1>LANShare P2P</h1>
             <p>用户: {{.Name}} | IP: {{.LocalIP}}:{{.LocalPort}}</p>
         </div>
+        
+        <!-- 主内容区域 -->
         <div class="main">
+            <!-- 侧边栏 -->
             <div class="sidebar">
-                <div class="status">
+                <div class="status" id="statusIndicator">
                     状态: 已连接
                 </div>
-                <h3>在线用户</h3>
-                <ul class="users-list" id="usersList">
-                    <li class="own">{{.Name}} (自己)</li>
-                </ul>
+                
+                <div class="users-section">
+                    <h3>👥 在线用户</h3>
+                    <ul class="users-list" id="usersList">
+                        <li class="own">{{.Name}} (自己)</li>
+                    </ul>
+                </div>
+                
                 <div class="commands">
-                    <h4>命令说明</h4>
+                    <h4>📋 命令说明</h4>
                     <ul>
-                        <li>/to 用户名 消息 - 私聊</li>
-                        <li>/name 新名称 - 改名</li>
+                        <li><code>/to 用户名 消息</code> - 私聊</li>
+                        <li><code>/send 用户名 文件路径</code> - 发送文件</li>
+                        <li><code>/transfers</code> - 查看传输列表</li>
+                        <li><code>/name 新名称</code> - 改名</li>
                         <li>直接输入 - 公聊</li>
                     </ul>
                 </div>
-            </div>
-            <div class="chat-area">
-                <div class="messages" id="messages">
-                    <!-- 消息将在这里显示 -->
+
+                <!-- 文件传输区域 -->
+                <div class="file-transfer-section">
+                    <h4>📁 文件传输</h4>
+                    <div class="file-input-group">
+                        <input type="file" id="fileInput" style="display: none;">
+                        <button onclick="document.getElementById('fileInput').click()" class="file-select-btn">
+                            选择文件
+                        </button>
+                        <span id="fileNameDisplay" class="file-name-display"></span>
+                        <select id="fileTargetUser" class="user-select">
+                            <option value="">选择用户</option>
+                        </select>
+                    </div>
+                    <button onclick="sendFile()" id="sendFileBtn" class="send-file-btn" disabled>
+                        发送文件
+                    </button>
                 </div>
+            </div>
+            
+            <!-- 聊天区域 -->
+            <div class="chat-area">
+                <!-- 消息区域 -->
+                <div class="messages" id="messages">
+                    <div class="welcome-message">
+                        <div class="message other">
+                            <div class="message-sender">系统</div>
+                            <div class="message-content">欢迎使用 LANShare P2P！开始聊天吧 🎉</div>
+                            <div class="message-time" id="welcomeTime"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 输入区域 -->
                 <div class="input-area">
                     <div class="input-group">
-                        <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)">
-                        <button onclick="sendMessage()">发送</button>
+                        <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)" autocomplete="off">
+                        <button onclick="sendMessage()" id="sendButton">
+                            <span class="button-text">发送</span>
+                            <span class="loading-indicator" style="display: none;">⏳</span>
+                        </button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- 文件接收确认弹窗 -->
+    <div id="file-confirm-dialog" class="dialog-overlay" style="display: none;">
+        <div class="dialog-box">
+            <h4>文件接收请求</h4>
+            <p>您收到一个文件传输请求：</p>
+            <div class="file-info">
+                <strong>文件名:</strong> <span id="dialog-filename"></span><br>
+                <strong>大小:</strong> <span id="dialog-filesize"></span><br>
+                <strong>来自:</strong> <span id="dialog-sender"></span>
+            </div>
+            <div class="dialog-buttons">
+                <button id="dialog-reject-btn" class="dialog-btn reject">拒绝</button>
+                <button id="dialog-accept-btn" class="dialog-btn accept">接受</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/app.js"></script>
+    <script>
+        // 设置欢迎消息时间
+        document.getElementById('welcomeTime').textContent = new Date().toLocaleTimeString('zh-CN', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    </script>
 </body>
 </html>

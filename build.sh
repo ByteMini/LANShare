@@ -19,14 +19,16 @@ mkdir -p build
 echo "正在清理旧的构建文件..."
 rm -f build/lanshare*
 
-# 源文件
-SOURCE_FILE="lanshare.go"
+# 源文件列表
+SOURCE_FILES="main.go types.go network.go discovery.go web.go filetransfer.go"
 
-# 检查源文件是否存在
-if [ ! -f "$SOURCE_FILE" ]; then
-    echo "错误: 源文件 $SOURCE_FILE 不存在"
-    exit 1
-fi
+# 检查所有源文件是否存在
+for file in $SOURCE_FILES; do
+    if [ ! -f "$file" ]; then
+        echo "错误: 源文件 $file 不存在"
+        exit 1
+    fi
+done
 
 echo "正在构建所有平台版本..."
 echo ""
@@ -40,7 +42,7 @@ build_platform() {
     
     echo "构建 $PLATFORM_NAME ($GOOS/$GOARCH)..."
     
-    if GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o "build/$OUTPUT_NAME" "$SOURCE_FILE"; then
+    if GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o "build/$OUTPUT_NAME" $SOURCE_FILES; then
         # 获取文件大小
         if command -v stat &> /dev/null; then
             if [[ "$OSTYPE" == "darwin"* ]]; then
