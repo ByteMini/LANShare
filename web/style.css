@@ -84,7 +84,7 @@ body {
     background: rgba(255, 255, 255, 0.6);
     backdrop-filter: blur(15px);
     -webkit-backdrop-filter: blur(15px);
-    border-right: 1px solid rgba(255, 255, 255, 0.2);
+    border-right: 1px solid #00000020;
     padding: 24px;
     overflow-y: auto;
 }
@@ -136,6 +136,18 @@ body {
     transform: translateX(2px);
 }
 
+.users-list li.active {
+    background: rgba(0, 122, 255, 0.15);
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.divider {
+    border: none;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    margin: 8px 0;
+}
+
 .users-list li.own {
     font-weight: 600;
     color: var(--primary-color);
@@ -143,92 +155,6 @@ body {
     background: rgba(0, 122, 255, 0.05);
 }
 
-/* 命令说明区域 */
-.commands {
-    margin-top: 24px;
-    padding: 20px;
-    background: rgba(255, 255, 255, 0.4);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.commands h4 {
-    margin: 0 0 12px 0;
-    color: var(--text-primary);
-    font-size: 1em;
-    font-weight: 600;
-}
-
-.commands ul {
-    margin: 0;
-    padding-left: 20px;
-}
-
-.commands li {
-    margin-bottom: 6px;
-    line-height: 1.5;
-    color: var(--text-secondary);
-    font-size: 0.9em;
-}
-
-/* 文件传输区域 */
-.file-transfer-section {
-    margin-top: 24px;
-    padding: 20px;
-    background: rgba(255, 255, 255, 0.4);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-.file-transfer-section h4 {
-    margin: 0 0 16px 0;
-    color: var(--text-primary);
-    font-size: 1em;
-    font-weight: 600;
-}
-
-.file-input-group {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 16px;
-}
-
-.file-name-display {
-    font-size: 0.85em;
-    color: var(--text-secondary);
-    background: rgba(0, 0, 0, 0.05);
-    padding: 8px 12px;
-    border-radius: 6px;
-    text-align: center;
-    word-break: break-all;
-    min-height: 34px; /* 保持高度一致 */
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.file-select-btn {
-    padding: 12px 16px;
-    background: rgba(0, 122, 255, 0.1);
-    color: var(--primary-color);
-    border: 1px solid rgba(0, 122, 255, 0.2);
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 0.9em;
-    font-weight: 500;
-    text-align: center;
-    transition: all 0.2s ease;
-}
-
-.file-select-btn:hover {
-    background: rgba(0, 122, 255, 0.2);
-    transform: translateY(-1px);
-}
 
 .user-select {
     padding: 12px 16px;
@@ -240,41 +166,6 @@ body {
     font-size: 0.9em;
     color: var(--text-primary);
     outline: none;
-}
-
-.user-select:focus {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.1);
-}
-
-.send-file-btn {
-    width: 100%;
-    padding: 12px 16px;
-    background: var(--primary-color);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 0.9em;
-    font-weight: 600;
-    transition: all 0.2s ease;
-}
-
-.send-file-btn:hover:not(:disabled) {
-    background: #0056D6;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0, 122, 255, 0.2);
-}
-
-.send-file-btn:active:not(:disabled) {
-    background: #0047B3;
-    transform: translateY(0);
-}
-
-.send-file-btn:disabled {
-    background: var(--text-tertiary);
-    cursor: not-allowed;
-    opacity: 0.6;
 }
 
 /* 文件传输状态 */
@@ -339,9 +230,10 @@ body {
 /* 消息样式 */
 .message {
     margin-bottom: 20px;
-    padding: 16px 20px;
+    padding: 12px 18px;
     border-radius: 18px;
-    max-width: 75%;
+    width: fit-content;
+    max-width: 30em; /* 每行约30个字符换行 */
     word-wrap: break-word;
     animation: fadeInUp 0.3s ease-out;
     backdrop-filter: blur(10px);
@@ -362,16 +254,8 @@ body {
     border-bottom-left-radius: 6px;
 }
 
-.message.private {
-    background: rgba(255, 149, 0, 0.1);
-    border-left: 3px solid var(--warning-color);
-}
-
-.message-sender {
-    font-weight: 600;
-    margin-bottom: 6px;
-    font-size: 0.9em;
-    color: var(--text-secondary);
+.message.other.private {
+    background: rgba(88, 86, 214, 0.1); /* 柔和的紫色背景 */
 }
 
 .message-content {
@@ -384,6 +268,8 @@ body {
     font-size: 0.8em;
     color: var(--text-tertiary);
     font-weight: 400;
+    text-align: right;
+    margin-top: 8px;
 }
 
 /* 输入区域 */
@@ -397,38 +283,46 @@ body {
 
 .input-group {
     display: flex;
-    gap: 12px;
     align-items: center;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(0, 0, 0, 0.226);
+    border-radius: 12px;
+    padding: 0;
+    transition: all 0.2s ease;
+    gap: 12px; /* 恢复 gap 属性 */
 }
 
 .input-group input {
     flex: 1;
     padding: 14px 20px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    border: none;
     border-radius: 12px;
     font-size: 1em;
     outline: none;
-    background: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: transparent;
     transition: all 0.2s ease;
     font-family: inherit;
 }
 
 .input-group input:focus {
-    border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
-    background: rgba(255, 255, 255, 0.9);
+    box-shadow: none;
+    background: transparent;
 }
 
 .input-group input::placeholder {
     color: var(--text-tertiary);
 }
 
+.input-group:focus-within {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+    background: rgba(255, 255, 255, 0.9);
+}
+
 .input-group button {
-    padding: 14px 24px;
-    background: var(--primary-color);
-    color: white;
+    padding: 14px 20px;
+    background: transparent;
+    color: var(--primary-color);
     border: none;
     border-radius: 12px;
     cursor: pointer;
@@ -439,22 +333,192 @@ body {
 }
 
 .input-group button:hover {
-    background: #0056D6;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0, 122, 255, 0.2);
+    background: rgba(0, 122, 255, 0.1);
+}
+
+.emoji-btn {
+    font-size: 1.4em;
+    padding: 14px 16px;
+}
+
+#sendButton {
+    border-left: 1px solid rgba(0, 0, 0, 0.1);
+    border-radius: 0 12px 12px 0;
+}
+
+.file-select-btn {
+    font-size: 1.4em;
+    padding: 14px 16px;
 }
 
 .input-group button:active {
-    background: #0047B3;
+    background: rgba(0, 122, 255, 0.2);
     transform: translateY(0);
 }
 
 .input-group button:disabled {
-    background: var(--text-tertiary);
+    color: var(--text-tertiary);
     cursor: not-allowed;
     transform: none;
     box-shadow: none;
+    background: transparent;
 }
+
+/* 新增的文件传输控制样式 */
+.file-transfer-controls {
+    margin-top: 12px;
+    padding: 16px;
+    background: rgba(0, 122, 255, 0.05);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    animation: fadeIn 0.3s ease;
+}
+
+.file-name-display {
+    flex: 1;
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-transfer-controls .user-select {
+    flex-basis: 180px;
+    padding: 8px 12px;
+    font-size: 0.9em;
+}
+
+.send-file-btn, .cancel-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.send-file-btn {
+    background: var(--primary-color);
+    color: white;
+}
+
+.send-file-btn:hover:not(:disabled) {
+    background: #0056D6;
+}
+
+.send-file-btn:disabled {
+    background: var(--text-tertiary);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.cancel-btn {
+    background: rgba(0, 0, 0, 0.1);
+    color: var(--text-primary);
+}
+
+.cancel-btn:hover {
+    background: rgba(0, 0, 0, 0.15);
+}
+
+/* 表情选择器样式 - Telegram风格 */
+.emoji-picker {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    padding: 16px;
+    background: var(--card-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    margin-bottom: 12px;
+    max-height: 280px;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    position: relative;
+    order: -1; /* 让表情选择器显示在输入框上方 */
+    animation: slideUpIn 0.3s ease-out;
+}
+
+.emoji-item {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 12px;
+    transition: all 0.2s ease;
+    background: transparent;
+}
+
+.emoji-item:hover {
+    background: rgba(0, 122, 255, 0.1);
+    transform: scale(1.1);
+}
+
+.emoji-item:active {
+    transform: scale(0.95);
+}
+
+.emoji-char {
+    font-size: 28px;
+    line-height: 1;
+    user-select: none;
+}
+
+/* 表情消息样式 - Telegram风格 */
+.emoji-message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+}
+
+.emoji-large {
+    font-size: 64px;
+    line-height: 1;
+    user-select: none;
+    animation: emojiPop 0.3s ease-out;
+}
+
+/* 表情弹出动画 */
+@keyframes emojiPop {
+    0% {
+        transform: scale(0.3);
+        opacity: 0;
+    }
+    50% {
+        transform: scale(1.1);
+    }
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* 表情消息的特殊样式 */
+.message .emoji-message {
+    background: transparent;
+    border-radius: 20px;
+    min-width: 80px;
+    min-height: 80px;
+}
+
+.message.own .emoji-message {
+    background: transparent;
+}
+
+.message.other .emoji-message {
+    background: transparent;
+}
+
 
 /* 滚动条样式 */
 .messages::-webkit-scrollbar,
@@ -510,6 +574,17 @@ body {
     to {
         opacity: 1;
         transform: translateX(0);
+    }
+}
+
+@keyframes slideUpIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
     }
 }
 

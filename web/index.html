@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,8 +9,10 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>LANShare P2P - {{.Name}}</title>
     <link rel="stylesheet" href="/static/style.css">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💬</text></svg>">
 </head>
+
 <body>
     <div class="container">
         <!-- 苹果风格头部 -->
@@ -17,7 +20,7 @@
             <h1>LANShare P2P</h1>
             <p>用户: {{.Name}} | IP: {{.LocalIP}}:{{.LocalPort}}</p>
         </div>
-        
+
         <!-- 主内容区域 -->
         <div class="main">
             <!-- 侧边栏 -->
@@ -25,45 +28,18 @@
                 <div class="status" id="statusIndicator">
                     状态: 已连接
                 </div>
-                
-                <div class="users-section">
-                    <h3>👥 在线用户</h3>
-                    <ul class="users-list" id="usersList">
-                        <li class="own">{{.Name}} (自己)</li>
-                    </ul>
-                </div>
-                
-                <div class="commands">
-                    <h4>📋 命令说明</h4>
-                    <ul>
-                        <li><code>/to 用户名 消息</code> - 私聊</li>
-                        <li><code>/send 用户名 文件路径</code> - 发送文件</li>
-                        <li><code>/transfers</code> - 查看传输列表</li>
-                        <li><code>/name 新名称</code> - 改名</li>
-                        <li>直接输入 - 公聊</li>
-                    </ul>
-                </div>
 
-                <!-- 文件传输区域 -->
-                <div class="file-transfer-section">
-                    <h4>📁 文件传输</h4>
-                    <div class="file-input-group">
-                        <input type="file" id="fileInput" style="display: none;">
-                        <button onclick="document.getElementById('fileInput').click()" class="file-select-btn">
-                            选择文件
-                        </button>
-                        <span id="fileNameDisplay" class="file-name-display"></span>
-                        <select id="fileTargetUser" class="user-select">
-                            <option value="">选择用户</option>
-                        </select>
-                    </div>
-                    <button onclick="sendFile()" id="sendFileBtn" class="send-file-btn" disabled>
-                        发送文件
-                    </button>
+                <div class="users-section">
+                    <h3>👥 聊天</h3>
+                    <ul class="users-list" id="usersList">
+                        <li id="public-chat-btn" class="chat-channel active" data-chat-id="all" data-chat-name="公聊">🌐
+                            公聊</li>
+                        <hr class="divider">
+                        <!-- 在线用户将由JS动态插入 -->
+                    </ul>
                 </div>
+              
             </div>
-            
-            <!-- 聊天区域 -->
             <div class="chat-area">
                 <!-- 消息区域 -->
                 <div class="messages" id="messages">
@@ -75,19 +51,41 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- 输入区域 -->
                 <div class="input-area">
+                     <div id="emoji-picker" class="emoji-picker" style="display: none;">
+                        <!-- 表情将由JS动态填充 -->
+                    </div>
                     <div class="input-group">
-                        <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)" autocomplete="off">
+                        <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)"
+                            autocomplete="off">
+                        <input type="file" id="fileInput" style="display: none;">
+                        <button id="emoji-button" class="emoji-btn">😀</button>
+                        <button onclick="document.getElementById('fileInput').click()" class="file-select-btn"
+                            title="选择文件">
+                            📎
+                        </button>
                         <button onclick="sendMessage()" id="sendButton">
                             <span class="button-text">发送</span>
                             <span class="loading-indicator" style="display: none;">⏳</span>
                         </button>
                     </div>
+                    <div id="file-transfer-controls" class="file-transfer-controls" style="display: none;">
+                        <span id="fileNameDisplay" class="file-name-display"></span>
+                        <select id="fileTargetUser" class="user-select">
+                            <option value="">选择接收文件的用户</option>
+                        </select>
+                        <button onclick="sendFile()" id="sendFileBtn" class="send-file-btn" disabled>发送文件</button>
+                        <button onclick="cancelFileSelection()" id="cancelFileBtn" class="cancel-btn">取消</button>
+                    </div>
                 </div>
             </div>
         </div>
+
+        <!-- 聊天区域 -->
+
+    </div>
     </div>
 
     <!-- 文件接收确认弹窗 -->
@@ -117,4 +115,5 @@
         });
     </script>
 </body>
+
 </html>

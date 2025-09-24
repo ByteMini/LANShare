@@ -131,12 +131,13 @@ func (node *P2PNode) handleMessages() {
 	for msg := range node.MessageChan {
 		switch msg.Type {
 		case "chat":
+			senderName := node.getPeerName(msg.From)
 			if msg.To == "" || msg.To == "all" {
 				// 公聊消息
-				node.addChatMessage(node.getPeerName(msg.From), msg.Content, false, false)
+				node.addChatMessage(senderName, "all", msg.Content, false, false)
 			} else if msg.To == node.ID {
 				// 私聊消息
-				node.addChatMessage(node.getPeerName(msg.From), msg.Content, false, true)
+				node.addChatMessage(senderName, node.Name, msg.Content, false, true)
 			}
 		case "handshake":
 			// 握手消息已在连接处理中处理

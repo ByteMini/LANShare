@@ -121,7 +121,7 @@ func (node *P2PNode) startCLI() {
 				Timestamp: time.Now(),
 			}
 			node.broadcastMessage(msg)
-			node.addChatMessage("我", text, true, false)
+			node.addChatMessage("我", "all", text, true, false)
 		}
 	}
 
@@ -171,7 +171,7 @@ func (node *P2PNode) handleCommand(command string) {
 		
 		if peer, exists := node.Peers[targetID]; exists {
 			node.sendMessageToPeer(peer, msg)
-			node.addChatMessage("我 -> "+targetName, message, true, true)
+			node.addChatMessage(node.Name, targetName, message, true, true)
 		}
 		
 	case "/list":

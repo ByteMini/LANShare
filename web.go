@@ -56,6 +56,12 @@ func (node *P2PNode) startWebGUI() {
 	staticServer := http.FileServer(http.FS(subFS))
 	mux.Handle("/static/", http.StripPrefix("/static/", staticServer))
 
+
+	// Ping处理器，用于检查Web服务器是否在线
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
 	// 发送消息处理器
 	mux.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -293,18 +299,19 @@ func (node *P2PNode) handleWebMessage(text string) {
 			Timestamp: time.Now(),
 		}
 		node.broadcastMessage(msg)
-		node.addChatMessage("我", text, true, false)
+		node.addChatMessage("我", "all", text, true, false)
 	}
 }
 
 // 添加聊天消息
-func (node *P2PNode) addChatMessage(sender, content string, isOwn, isPrivate bool) {
+func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, isPrivate bool) {
 	if node.WebEnabled {
 		node.MessagesMutex.Lock()
 		defer node.MessagesMutex.Unlock()
 		
 		msg := ChatMessage{
 			Sender:    sender,
+			Recipient: recipient,
 			Content:   content,
 			Timestamp: time.Now(),
 			IsOwn:     isOwn,

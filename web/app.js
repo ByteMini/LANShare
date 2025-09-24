@@ -1,75 +1,102 @@
 // LANShare P2P Web客户端JavaScript代码
 
-// 全局变量
-let isConnected = true;
-let lastMessageCount = 0;
-let lastUserCount = 0;
+// =================================
+// 全局状态变量
+// =================================
+let localUsername = '';
+let currentChat = { id: 'all', name: '公聊' };
+let allMessages = [];
+let shownPendingTransfers = new Set();
 
-// 初始化函数
+// =================================
+// 初始化
+// =================================
 function init() {
-    // 设置输入框焦点
     document.getElementById('messageInput').focus();
     
     // 初始加载数据
-    loadMessages();
     loadUsers();
+    loadMessages();
+    loadFileTransfers();
     
     // 设置定时器
-    setInterval(loadMessages, 1000);
-    setInterval(loadUsers, 2000);
+    setInterval(loadMessages, 2000); // 消息可以稍微慢一点
+    setInterval(loadUsers, 3000);    // 用户列表不需要太频繁
+    setInterval(loadFileTransfers, 3000);
+    setInterval(checkConnection, 5000); // 添加连接检查
+    
+    // 初始化功能
+    initFileTransfer();
+    initChatSwitching();
+    initEmojiPicker();
     
     console.log('LANShare P2P Web客户端已初始化');
 }
 
-// 处理键盘事件
+// =================================
+// 聊天上下文切换
+// =================================
+function initChatSwitching() {
+    const publicChatBtn = document.getElementById('public-chat-btn');
+    publicChatBtn.addEventListener('click', () => switchChat(publicChatBtn));
+}
+
+function switchChat(targetElement) {
+    // 更新全局状态
+    currentChat.id = targetElement.dataset.chatId;
+    currentChat.name = targetElement.dataset.chatName;
+
+    // 更新UI高亮状态
+    document.querySelectorAll('.users-list li').forEach(li => li.classList.remove('active'));
+    targetElement.classList.add('active');
+
+    // 更新消息输入框
+    const input = document.getElementById('messageInput');
+    input.value = ''; // 始终清空输入框
+    if (currentChat.id === 'all') {
+        input.placeholder = '输入公共消息...';
+    } else {
+        input.placeholder = `私聊 ${currentChat.name}...`;
+    }
+    input.focus();
+
+    // 重新渲染消息列表
+    displayMessages();
+}
+
+// =================================
+// 消息处理
+// =================================
 function handleKeyPress(event) {
     if (event.key === 'Enter') {
         sendMessage();
     }
 }
 
-// 发送消息
 function sendMessage() {
     const input = document.getElementById('messageInput');
-    const message = input.value.trim();
+    let message = input.value.trim();
     
     if (message === '') {
-        // 添加震动效果
         input.style.animation = 'shake 0.3s ease-in-out';
-        setTimeout(() => {
-            input.style.animation = '';
-        }, 300);
+        setTimeout(() => { input.style.animation = ''; }, 300);
         return;
     }
-    
-    // 显示发送状态
-    const button = document.getElementById('sendButton');
-    const buttonText = button.querySelector('.button-text');
-    const loadingIndicator = button.querySelector('.loading-indicator');
-    
-    buttonText.style.display = 'none';
-    loadingIndicator.style.display = 'inline';
-    button.disabled = true;
-    
-    // 添加发送动画
-    button.style.transform = 'scale(0.95)';
+
+    // 如果是私聊，隐式地添加命令前缀
+    if (currentChat.id !== 'all') {
+        message = `/to ${currentChat.name} ${message}`;
+    }
     
     fetch('/send', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({message: message})
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message })
     })
     .then(response => {
         if (response.ok) {
-            input.value = '';
+            input.value = ''; // 总是清空输入框
             input.focus();
-            // 添加发送成功反馈
-            button.style.background = 'var(--success-color)';
-            setTimeout(() => {
-                button.style.background = 'var(--primary-color)';
-            }, 200);
         } else {
             throw new Error('发送失败');
         }
@@ -77,415 +104,244 @@ function sendMessage() {
     .catch(error => {
         console.error('发送消息失败:', error);
         showNotification('发送消息失败，请重试', 'error');
-    })
-    .finally(() => {
-        buttonText.style.display = 'inline';
-        loadingIndicator.style.display = 'none';
-        button.disabled = false;
-        button.style.transform = '';
     });
 }
 
-// 加载消息
 function loadMessages() {
     fetch('/messages')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('获取消息失败');
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            updateConnectionStatus(true);
-            displayMessages(data.messages || []);
+            if (data.messages.length !== allMessages.length) {
+                allMessages = data.messages || [];
+                displayMessages(); // 数据变化时才重新渲染
+            }
         })
-        .catch(error => {
-            console.error('加载消息失败:', error);
-            updateConnectionStatus(false);
-        });
+        .catch(error => console.error('加载消息失败:', error));
 }
 
-// 显示消息
-function displayMessages(messages) {
+function displayMessages() {
     const messagesDiv = document.getElementById('messages');
     const shouldScroll = isScrolledToBottom(messagesDiv);
-    
-    // 检查是否有新消息
-    if (messages.length !== lastMessageCount) {
-        messagesDiv.innerHTML = '';
-        
-        messages.forEach(msg => {
+
+    const filteredMessages = allMessages.filter(msg => {
+        if (currentChat.id === 'all') {
+            return !msg.isPrivate;
+        } else {
+            // 私聊消息：发送者是对方且接收者是我，或者发送者是我且接收者是对方
+            return msg.isPrivate && 
+                   ((msg.sender === currentChat.name && msg.recipient === localUsername) || 
+                    (msg.isOwn && msg.recipient === currentChat.name));
+        }
+    });
+
+    messagesDiv.innerHTML = '';
+    if (filteredMessages.length === 0) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'message-placeholder';
+        placeholder.textContent = `开始与 ${currentChat.name} 对话吧！`;
+        messagesDiv.appendChild(placeholder);
+    } else {
+        filteredMessages.forEach(msg => {
             const messageDiv = createMessageElement(msg);
             messagesDiv.appendChild(messageDiv);
         });
-        
-        lastMessageCount = messages.length;
-        
-        // 如果之前滚动到底部，继续保持在底部
-        if (shouldScroll) {
-            scrollToBottom(messagesDiv);
-        }
+    }
+    
+    if (shouldScroll) {
+        scrollToBottom(messagesDiv);
     }
 }
 
-// 创建消息元素
 function createMessageElement(msg) {
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message ' + (msg.isOwn ? 'own' : 'other') + (msg.isPrivate ? ' private' : '');
-    
-    const senderDiv = document.createElement('div');
-    senderDiv.className = 'message-sender';
-    senderDiv.textContent = msg.sender + (msg.isPrivate ? ' (私聊)' : '');
-    
+
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
-    contentDiv.textContent = msg.content;
+
+    if (msg.content.startsWith('emoji:')) {
+        const emojiId = msg.content.split(':')[1];
+        const emoji = emojis.find(e => e.id === emojiId);
+        if (emoji) {
+            // Telegram风格的大表情显示
+            const emojiContainer = document.createElement('div');
+            emojiContainer.className = 'emoji-message';
+            emojiContainer.innerHTML = `<span class="emoji-large">${emoji.emoji}</span>`;
+            contentDiv.appendChild(emojiContainer);
+        } else {
+            contentDiv.textContent = msg.content; // 如果找不到表情，则显示原始文本
+        }
+    } else {
+        contentDiv.textContent = msg.content;
+    }
     
     const timeDiv = document.createElement('div');
     timeDiv.className = 'message-time';
     timeDiv.textContent = formatTime(new Date(msg.timestamp));
     
-    messageDiv.appendChild(senderDiv);
     messageDiv.appendChild(contentDiv);
     messageDiv.appendChild(timeDiv);
     
     return messageDiv;
 }
 
-// 加载用户列表
+// =================================
+// 用户列表处理
+// =================================
 function loadUsers() {
     fetch('/users')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('获取用户列表失败');
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            updateConnectionStatus(true);
             displayUsers(data.users || []);
         })
-        .catch(error => {
-            console.error('加载用户列表失败:', error);
-            updateConnectionStatus(false);
-        });
+        .catch(error => console.error('加载用户列表失败:', error));
 }
 
-// 显示用户列表
 function displayUsers(users) {
     const usersList = document.getElementById('usersList');
-    
-    // 检查是否有变化
-    if (users.length !== lastUserCount) {
-        usersList.innerHTML = '';
-        
-        users.forEach(user => {
-            const li = document.createElement('li');
-            li.textContent = user;
-            
-            if (user.includes('(自己)')) {
-                li.className = 'own';
-            } else {
-                li.onclick = () => {
-                    const username = user.split(' ')[0]; // 提取用户名
-                    startPrivateChat(username);
-                };
-                li.title = '点击发起私聊';
-            }
-            
-            usersList.appendChild(li);
-        });
-        
-        lastUserCount = users.length;
+    const existingUsers = new Set([...usersList.querySelectorAll('li[data-chat-id]')].map(li => li.dataset.chatId));
+    existingUsers.delete('all'); // 公聊频道不在此处管理
+
+    const newUsers = new Set();
+
+    // 提取自己的用户名
+    const selfUser = users.find(u => u.includes('(自己)'));
+    if (selfUser) {
+        localUsername = selfUser.replace(' (自己)', '').trim();
     }
-}
 
-// 开始私聊
-function startPrivateChat(username) {
-    const input = document.getElementById('messageInput');
-    input.value = '/to ' + username + ' ';
-    input.focus();
-    
-    // 将光标移到末尾
-    input.setSelectionRange(input.value.length, input.value.length);
-}
-
-// 更新连接状态
-function updateConnectionStatus(connected) {
-    const statusDiv = document.getElementById('statusIndicator');
-    
-    if (connected !== isConnected) {
-        isConnected = connected;
-        
-        if (connected) {
-            statusDiv.textContent = '状态: 已连接 ✅';
-            statusDiv.className = 'status';
-            // 添加连接成功动画
-            statusDiv.style.animation = 'pulse 0.5s ease-in-out';
-            setTimeout(() => {
-                statusDiv.style.animation = '';
-            }, 500);
-        } else {
-            statusDiv.textContent = '状态: 连接断开 ❌';
-            statusDiv.className = 'status offline';
+    users.forEach(user => {
+        if (!user.includes('(自己)')) {
+            const username = user.split(' ')[0];
+            newUsers.add(username);
+            
+            if (!existingUsers.has(username)) {
+                // 添加新用户
+                const li = document.createElement('li');
+                li.dataset.chatId = username;
+                li.dataset.chatName = username;
+                li.textContent = `👤 ${username}`;
+                li.onclick = () => switchChat(li);
+                usersList.appendChild(li);
+            }
         }
-    }
-}
+    });
 
-// 显示通知
-function showNotification(message, type = 'info') {
-    // 创建通知元素
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.textContent = message;
-    
-    // 设置样式
-    notification.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        padding: 12px 20px;
-        border-radius: 4px;
-        color: white;
-        font-weight: bold;
-        z-index: 1000;
-        animation: slideIn 0.3s ease-out;
-    `;
-    
-    // 根据类型设置背景色
-    switch (type) {
-        case 'error':
-            notification.style.background = '#f44336';
-            break;
-        case 'success':
-            notification.style.background = '#4caf50';
-            break;
-        case 'warning':
-            notification.style.background = '#ff9800';
-            break;
-        default:
-            notification.style.background = '#2196f3';
-    }
-    
-    document.body.appendChild(notification);
-    
-    // 3秒后自动移除
-    setTimeout(() => {
-        notification.style.animation = 'slideOut 0.3s ease-in';
-        setTimeout(() => {
-            if (notification.parentNode) {
-                notification.parentNode.removeChild(notification);
+    // 移除已离线的用户
+    existingUsers.forEach(oldUser => {
+        if (!newUsers.has(oldUser)) {
+            const userElement = usersList.querySelector(`li[data-chat-id="${oldUser}"]`);
+            if (userElement) {
+                userElement.remove();
             }
-        }, 300);
-    }, 3000);
-}
-
-// 工具函数：检查是否滚动到底部
-function isScrolledToBottom(element) {
-    return element.scrollHeight - element.clientHeight <= element.scrollTop + 1;
-}
-
-// 工具函数：滚动到底部
-function scrollToBottom(element) {
-    element.scrollTop = element.scrollHeight;
-}
-
-// 工具函数：格式化时间
-function formatTime(date) {
-    return date.toLocaleTimeString('zh-CN', {
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
+        }
     });
 }
 
-// 工具函数：转义HTML
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// 添加CSS动画
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-    }
-    
-    @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-    }
-    
-    .notification {
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }
-`;
-document.head.appendChild(style);
-
-// 文件传输相关功能
+// =================================
+// 文件传输
+// =================================
 let selectedFile = null;
 
-// 初始化文件传输功能
 function initFileTransfer() {
     const fileInput = document.getElementById('fileInput');
-    const sendFileBtn = document.getElementById('sendFileBtn');
-    const targetUserSelect = document.getElementById('fileTargetUser');
-    
-    // 文件选择事件
+    const fileControls = document.getElementById('file-transfer-controls');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+
     fileInput.addEventListener('change', function(event) {
-        const fileNameDisplay = document.getElementById('fileNameDisplay');
         if (event.target.files.length > 0) {
             selectedFile = event.target.files[0];
             fileNameDisplay.textContent = selectedFile.name;
+            fileControls.style.display = 'flex';
         } else {
-            selectedFile = null;
-            fileNameDisplay.textContent = '';
+            cancelFileSelection();
         }
         updateSendFileButton();
     });
     
-    // 用户选择变化事件
-    targetUserSelect.addEventListener('change', updateSendFileButton);
-    
-    // 初始化用户选择框
+    document.getElementById('fileTargetUser').addEventListener('change', updateSendFileButton);
     updateUserSelect();
+    setInterval(updateUserSelect, 5000);
 }
 
-// 更新用户选择框
 function updateUserSelect() {
     const targetUserSelect = document.getElementById('fileTargetUser');
+    const currentSelection = targetUserSelect.value;
     
-    // 清空现有选项（保留"选择用户"选项）
-    while (targetUserSelect.options.length > 1) {
-        targetUserSelect.remove(1);
-    }
-    
-    // 从服务器获取最新的用户列表
     fetch('/users')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('获取用户列表失败');
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            const users = data.users || [];
+            const users = data.users.filter(u => !u.includes('(自己)')).map(u => u.split(' ')[0]);
             
-            // 添加在线用户（排除自己）
-            users.forEach(user => {
-                if (!user.includes('(自己)')) {
-                    const username = user.split(' ')[0]; // 提取用户名
-                    const option = document.createElement('option');
-                    option.value = username;
-                    option.textContent = username;
-                    targetUserSelect.appendChild(option);
-                }
+            // 清空
+            while (targetUserSelect.options.length > 1) {
+                targetUserSelect.remove(1);
+            }
+
+            // 填充
+            users.forEach(username => {
+                const option = document.createElement('option');
+                option.value = username;
+                option.textContent = username;
+                targetUserSelect.appendChild(option);
             });
-        })
-        .catch(error => {
-            console.error('更新用户选择框失败:', error);
+            targetUserSelect.value = currentSelection;
         });
 }
 
-// 更新发送文件按钮状态
 function updateSendFileButton() {
     const sendFileBtn = document.getElementById('sendFileBtn');
     const targetUserSelect = document.getElementById('fileTargetUser');
-    
     sendFileBtn.disabled = !selectedFile || !targetUserSelect.value;
 }
 
-// 发送文件
 function sendFile() {
-    if (!selectedFile) {
-        showNotification('请先选择文件', 'error');
+    if (!selectedFile || !document.getElementById('fileTargetUser').value) {
+        showNotification('请选择文件和目标用户', 'error');
         return;
     }
     
-    const targetUserSelect = document.getElementById('fileTargetUser');
-    const targetUser = targetUserSelect.value;
-    
-    if (!targetUser) {
-        showNotification('请选择目标用户', 'error');
-        return;
-    }
-    
-    // 检查文件大小（100MB限制）
-    if (selectedFile.size > 100 * 1024 * 1024) {
-        showNotification('文件大小超过限制（最大100MB）', 'error');
-        return;
-    }
-    
-    const sendFileBtn = document.getElementById('sendFileBtn');
-    sendFileBtn.disabled = true;
-    sendFileBtn.textContent = '发送中...';
-    
-    // 创建FormData对象
+    const targetUser = document.getElementById('fileTargetUser').value;
     const formData = new FormData();
     formData.append('file', selectedFile);
     formData.append('targetName', targetUser);
     
-    fetch('/sendfile', {
-        method: 'POST',
-        body: formData
-    })
-    .then(response => {
-        if (response.ok) {
-            showNotification('文件传输请求已发送', 'success');
-            // 重置文件选择
-            document.getElementById('fileInput').value = '';
-            selectedFile = null;
-            updateSendFileButton();
-        } else {
-            throw new Error('文件发送失败');
-        }
-    })
-    .catch(error => {
-        console.error('发送文件失败:', error);
-        showNotification('文件发送失败，请重试', 'error');
-    })
-    .finally(() => {
-        sendFileBtn.disabled = false;
-        sendFileBtn.textContent = '发送文件';
-    });
+    fetch('/sendfile', { method: 'POST', body: formData })
+        .then(response => {
+            if (response.ok) {
+                showNotification('文件传输请求已发送', 'success');
+                cancelFileSelection();
+            } else {
+                throw new Error('文件发送失败');
+            }
+        })
+        .catch(error => showNotification(error.message, 'error'));
 }
 
-// 加载文件传输列表
+function cancelFileSelection() {
+    const fileInput = document.getElementById('fileInput');
+    const fileControls = document.getElementById('file-transfer-controls');
+    
+    selectedFile = null;
+    fileInput.value = ''; // 重置文件输入
+    fileControls.style.display = 'none';
+    document.getElementById('fileNameDisplay').textContent = '';
+    updateSendFileButton();
+}
+
 function loadFileTransfers() {
     fetch('/filetransfers')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('获取文件传输列表失败');
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            displayFileTransfers(data.transfers || []);
+            const pendingReceive = (data.transfers || []).find(t => t.direction === 'receive' && t.status === 'pending');
+            if (pendingReceive && !shownPendingTransfers.has(pendingReceive.fileId)) {
+                showFileConfirmDialog(pendingReceive);
+                shownPendingTransfers.add(pendingReceive.fileId);
+            }
         })
-        .catch(error => {
-            console.error('加载文件传输列表失败:', error);
-        });
+        .catch(error => console.error('加载文件传输列表失败:', error));
 }
 
-// 用一个集合来跟踪已经处理过的待处理文件请求，防止重复弹窗
-let shownPendingTransfers = new Set();
-
-// 显示文件传输列表
-function displayFileTransfers(transfers) {
-    // 检查是否有待处理的接收文件
-    const pendingReceive = transfers.find(t => t.direction === 'receive' && t.status === 'pending');
-    
-    if (pendingReceive && !shownPendingTransfers.has(pendingReceive.fileId)) {
-        showFileConfirmDialog(pendingReceive);
-        shownPendingTransfers.add(pendingReceive.fileId);
-    }
-}
-
-// 显示文件确认弹窗
 function showFileConfirmDialog(transfer) {
     const dialog = document.getElementById('file-confirm-dialog');
     document.getElementById('dialog-filename').textContent = transfer.fileName;
@@ -499,7 +355,6 @@ function showFileConfirmDialog(transfer) {
         sendFileResponse(transfer.fileId, true);
         hideDialog();
     };
-
     const onReject = () => {
         sendFileResponse(transfer.fileId, false);
         hideDialog();
@@ -515,14 +370,12 @@ function showFileConfirmDialog(transfer) {
         dialog.classList.remove('visible');
         setTimeout(() => {
             dialog.style.display = 'none';
-            // 清理事件监听器
             acceptBtn.onclick = null;
             rejectBtn.onclick = null;
         }, 300);
     }
 }
 
-// 发送文件传输响应
 function sendFileResponse(fileId, accepted) {
     fetch('/fileresponse', {
         method: 'POST',
@@ -533,13 +386,120 @@ function sendFileResponse(fileId, accepted) {
         if (!response.ok) throw new Error('响应失败');
         showNotification(`文件传输已${accepted ? '接受' : '拒绝'}`, 'success');
     })
-    .catch(error => {
-        console.error('发送文件响应失败:', error);
-        showNotification('发送响应失败', 'error');
+    .catch(error => showNotification('发送响应失败', 'error'));
+}
+
+// =================================
+// 表情功能 - Telegram风格
+// =================================
+const emojis = [
+    { id: 'smile', emoji: '😊', name: '微笑' },
+    { id: 'love', emoji: '😍', name: '爱心眼' },
+    { id: 'laugh', emoji: '😂', name: '大笑' },
+    { id: 'wow', emoji: '😮', name: '惊讶' },
+    { id: 'cry', emoji: '😢', name: '哭泣' },
+    { id: 'angry', emoji: '😠', name: '生气' },
+    { id: 'cool', emoji: '😎', name: '酷' },
+    { id: 'wink', emoji: '😉', name: '眨眼' },
+    { id: 'kiss', emoji: '😘', name: '飞吻' },
+    { id: 'thinking', emoji: '🤔', name: '思考' },
+    { id: 'thumbsup', emoji: '👍', name: '点赞' },
+    { id: 'thumbsdown', emoji: '👎', name: '点踩' },
+    { id: 'clap', emoji: '👏', name: '鼓掌' },
+    { id: 'fire', emoji: '🔥', name: '火' },
+    { id: 'heart', emoji: '❤️', name: '红心' },
+    { id: 'party', emoji: '🎉', name: '庆祝' },
+    { id: 'rocket', emoji: '🚀', name: '火箭' },
+    { id: 'star', emoji: '⭐', name: '星星' }
+];
+
+function initEmojiPicker() {
+    const emojiButton = document.getElementById('emoji-button');
+    const emojiPicker = document.getElementById('emoji-picker');
+
+    emojiButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isVisible = emojiPicker.style.display === 'grid';
+        emojiPicker.style.display = isVisible ? 'none' : 'grid';
+    });
+
+    // 点击其他地方关闭表情选择器
+    document.addEventListener('click', (e) => {
+        if (!emojiPicker.contains(e.target) && !emojiButton.contains(e.target)) {
+            emojiPicker.style.display = 'none';
+        }
+    });
+
+    // 创建表情网格
+    emojis.forEach(emoji => {
+        const emojiDiv = document.createElement('div');
+        emojiDiv.className = 'emoji-item';
+        emojiDiv.dataset.emojiId = emoji.id;
+        emojiDiv.title = emoji.name;
+        emojiDiv.innerHTML = `<span class="emoji-char">${emoji.emoji}</span>`;
+        emojiPicker.appendChild(emojiDiv);
+
+        emojiDiv.addEventListener('click', () => {
+            sendEmojiMessage(emoji.id);
+            emojiPicker.style.display = 'none';
+        });
     });
 }
 
-// 格式化字节大小
+function sendEmojiMessage(emojiId) {
+    let message = `emoji:${emojiId}`;
+    
+    // 如果是私聊，添加命令前缀，就像sendMessage函数一样
+    if (currentChat.id !== 'all') {
+        message = `/to ${currentChat.name} ${message}`;
+    }
+    
+    fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message })
+    })
+    .catch(error => {
+        console.error('发送表情失败:', error);
+        showNotification('发送表情失败，请重试', 'error');
+    });
+}
+
+// =================================
+// 连接状态检查
+// =================================
+function checkConnection() {
+    fetch('/ping')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('服务器无响应');
+            }
+            showConnectedState();
+        })
+        .catch(() => {
+            showDisconnectedState();
+        });
+}
+
+function showConnectedState() {
+    const statusIndicator = document.getElementById('statusIndicator');
+    if (!statusIndicator.classList.contains('online')) {
+        statusIndicator.textContent = '状态: 已连接';
+        statusIndicator.classList.remove('offline');
+        statusIndicator.classList.add('online');
+    }
+}
+
+function showDisconnectedState() {
+    const statusIndicator = document.getElementById('statusIndicator');
+    statusIndicator.textContent = '状态: 未连接';
+    statusIndicator.classList.add('offline');
+    statusIndicator.classList.remove('online');
+}
+
+// =================================
+// 工具函数
+// =================================
 function formatBytes(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -549,53 +509,34 @@ function formatBytes(bytes, decimals = 2) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-
-// 初始化函数
-function init() {
-    // 设置输入框焦点
-    document.getElementById('messageInput').focus();
-    
-    // 初始加载数据
-    loadMessages();
-    loadUsers();
-    loadFileTransfers();
-    
-    // 设置定时器
-    setInterval(loadMessages, 1000);
-    setInterval(loadUsers, 2000);
-    setInterval(loadFileTransfers, 3000);
-    setInterval(updateUserSelect, 5000); // 每5秒更新用户选择框
-    
-    // 初始化文件传输功能
-    initFileTransfer();
-    
-    console.log('LANShare P2P Web客户端已初始化');
+function isScrolledToBottom(element) {
+    return element.scrollHeight - element.clientHeight <= element.scrollTop + 1;
 }
 
-// 页面加载完成后初始化
+function scrollToBottom(element) {
+    element.scrollTop = element.scrollHeight;
+}
+
+function formatTime(date) {
+    return date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+}
+
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+    setTimeout(() => {
+        notification.style.animation = 'slideOutRight 0.3s ease-in forwards';
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
+}
+
+// =================================
+// 启动
+// =================================
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
 } else {
     init();
 }
-
-// 页面卸载时清理
-window.addEventListener('beforeunload', function() {
-    console.log('LANShare P2P Web客户端正在关闭');
-});
-
-// 处理网络错误
-window.addEventListener('online', function() {
-    showNotification('网络连接已恢复', 'success');
-    loadMessages();
-    loadUsers();
-});
-
-window.addEventListener('offline', function() {
-    showNotification('网络连接已断开', 'warning');
-    updateConnectionStatus(false);
-});
-
-// 导出函数供HTML使用
-window.handleKeyPress = handleKeyPress;
-window.sendMessage = sendMessage;

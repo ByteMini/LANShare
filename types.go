@@ -68,6 +68,7 @@ type DiscoveryMessage struct {
 // ChatMessage结构体 - 聊天消息结构
 type ChatMessage struct {
 	Sender    string    `json:"sender"`
+	Recipient string    `json:"recipient"` // "all" for public, or username for private
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
 	IsOwn     bool      `json:"isOwn"`
