@@ -473,6 +473,14 @@ body {
     user-select: none;
 }
 
+.emoji-gif {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    border-radius: 6px;
+    user-select: none;
+}
+
 /* 表情消息样式 - Telegram风格 */
 .emoji-message {
     display: flex;
@@ -486,6 +494,31 @@ body {
     line-height: 1;
     user-select: none;
     animation: emojiPop 0.3s ease-out;
+}
+
+.emoji-large-gif {
+    width: 80px;
+    height: 80px;
+    object-fit: contain;
+    border-radius: 12px;
+    user-select: none;
+    animation: emojiPop 0.3s ease-out;
+}
+
+/* 表情分类样式 */
+.emoji-section {
+    grid-column: 1 / -1;
+    margin: 8px 0 4px 0;
+}
+
+.emoji-section-title {
+    font-size: 0.85em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    margin-bottom: 8px;
 }
 
 /* 表情弹出动画 */

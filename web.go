@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-//go:embed all:web
+//go:embed all:web emoji_gifs.json
 var webFS embed.FS
 
 // 启动Web GUI服务器
@@ -55,6 +55,28 @@ func (node *P2PNode) startWebGUI() {
 	// 请求 /static/style.css -> 在 subFS 中查找 style.css
 	staticServer := http.FileServer(http.FS(subFS))
 	mux.Handle("/static/", http.StripPrefix("/static/", staticServer))
+
+	// GIF 表情文件服务器
+	// 请求 /emoji-gifs/heart.gif -> 从 assets/emoji-gifs/heart.gif 服务
+	emojiGifServer := http.FileServer(http.Dir("assets/emoji-gifs"))
+	mux.Handle("/emoji-gifs/", http.StripPrefix("/emoji-gifs/", emojiGifServer))
+
+	// 获取 GIF 表情列表处理器
+	mux.HandleFunc("/emoji-gifs-list", func(w http.ResponseWriter, r *http.Request) {
+		// 读取嵌入的 emoji_gifs.json 文件
+		data, err := webFS.Open("emoji_gifs.json")
+		if err != nil {
+			// 如果文件不存在，返回空列表
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]interface{}{})
+			return
+		}
+		defer data.Close()
+
+		// 直接转发文件内容
+		w.Header().Set("Content-Type", "application/json")
+		io.Copy(w, data)
+	})
 
 
 	// Ping处理器，用于检查Web服务器是否在线
@@ -230,20 +252,20 @@ func (node *P2PNode) startWebGUI() {
 
 	// 创建HTTP服务器
 	node.WebServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", node.WebPort),
+		Addr:    fmt.Sprintf("127.0.0.1:%d", node.WebPort),
 		Handler: mux,
 	}
 
 	// 启动Web服务器
-	go func() {
-		webURL := fmt.Sprintf("http://%s:%d", node.LocalIP, node.WebPort)
-		fmt.Printf("Web界面已启动: %s\n", webURL)
-		fmt.Println("请手动在浏览器中打开上述URL访问Web界面")
-		
-		if err := node.WebServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Web服务器启动失败: %v", err)
-		}
-	}()
+		go func() {
+			webURL := fmt.Sprintf("http://127.0.0.1:%d", node.WebPort)
+			fmt.Printf("Web界面已启动: %s\n", webURL)
+			fmt.Println("请手动在浏览器中打开上述URL访问Web界面")
+			
+			if err := node.WebServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("Web服务器启动失败: %v", err)
+			}
+		}()
 }
 
 // 停止Web GUI服务器
@@ -303,7 +325,7 @@ func (node *P2PNode) handleWebMessage(text string) {
 	}
 }
 
-// 添加聊天消息
+	// 添加聊天消息
 func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, isPrivate bool) {
 	if node.WebEnabled {
 		node.MessagesMutex.Lock()
@@ -328,9 +350,36 @@ func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, is
 
 	// 命令行显示
 	timestamp := time.Now().Format("15:04:05")
+	displayContent := content
+	if strings.HasPrefix(content, "emoji:") {
+		emojiId := strings.TrimPrefix(content, "emoji:")
+		if strings.HasPrefix(emojiId, "gif-") {
+			emojiId = strings.TrimPrefix(emojiId, "gif-")
+		}
+		displayContent = "[发送了表情]"
+		
+		// 从 emoji_gifs.json 查找表情名称
+		data, err := webFS.Open("emoji_gifs.json")
+		if err == nil {
+			defer data.Close()
+			type EmojiEntry struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			}
+			var entries []EmojiEntry
+			if json.NewDecoder(data).Decode(&entries) == nil {
+				for _, e := range entries {
+					if e.ID == emojiId {
+						displayContent = fmt.Sprintf("[emoji: %s]", e.Name)
+						break
+					}
+				}
+			}
+		}
+	}
 	if isPrivate {
-		fmt.Printf("[%s] %s (私聊): %s\n", timestamp, sender, content)
+		fmt.Printf("[%s] %s (私聊): %s\n", timestamp, sender, displayContent)
 	} else {
-		fmt.Printf("[%s] %s: %s\n", timestamp, sender, content)
+		fmt.Printf("[%s] %s: %s\n", timestamp, sender, displayContent)
 	}
 }

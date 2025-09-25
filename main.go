@@ -80,7 +80,7 @@ func (node *P2PNode) showCommandHelp() {
 	fmt.Println("  /transfers - 查看文件传输列表")
 	fmt.Println("  /list - 查看在线用户")
 	fmt.Println("  /name <新名称> - 更改用户名")
-	fmt.Println("  /web - 打开Web界面")
+	fmt.Println("  /web [端口] - 打开Web界面 (默认8080)")
 	fmt.Println("  /webstop - 关闭Web界面")
 	fmt.Println("  /help - 显示帮助信息")
 	fmt.Println("  /quit - 退出程序")
@@ -208,10 +208,21 @@ func (node *P2PNode) handleCommand(command string) {
 		if !node.WebEnabled {
 			// 动态启用Web界面
 			node.WebEnabled = true
+			
+			// 支持指定端口
+			if len(parts) > 1 {
+				if port, err := strconv.Atoi(parts[1]); err == nil && port > 0 && port < 65536 {
+					node.WebPort = port
+					fmt.Printf("Web端口设置为: %d\n", node.WebPort)
+				} else {
+					fmt.Println("无效端口号，使用默认端口 8080")
+				}
+			}
+			
 			node.startWebGUI()
 			fmt.Println("Web界面已启用")
 		}
-		webURL := fmt.Sprintf("http://%s:%d", node.LocalIP, node.WebPort)
+		webURL := fmt.Sprintf("http://127.0.0.1:%d", node.WebPort)
 		fmt.Printf("Web界面地址: %s\n", webURL)
 		// openBrowser(webURL)  // 注释掉自动打开浏览器的功能
 		
@@ -305,6 +316,7 @@ func main() {
 		fmt.Printf("  %s -cli               # 命令行模式\n", os.Args[0])
 		fmt.Printf("  %s -name 张三         # 指定用户名\n", os.Args[0])
 		fmt.Println()
+		fmt.Println("Web 界面: 在 CLI 模式下使用 /web 命令启用")
 		fmt.Println("网络端口:")
 		fmt.Println("  P2P通信: 8888 (TCP)")
 		fmt.Println("  服务发现: 9999 (UDP)")
@@ -315,8 +327,11 @@ func main() {
 	fmt.Println("           LANShare P2P 启动器")
 	fmt.Println("===========================================")
 
-	// 默认使用命令行模式
+	// 默认不启用 Web 模式
 	webMode := false
+	if cliMode {
+		webMode = false
+	}
 
 	// 获取用户名
 	if name == "" {
@@ -334,7 +349,11 @@ func main() {
 		}
 	}
 	
-	fmt.Printf("启动 P2P 客户端 (命令行模式)，用户名: %s\n", name)
+	if webMode {
+		fmt.Printf("启动 P2P 客户端 (Web模式)，用户名: %s\n", name)
+	} else {
+		fmt.Printf("启动 P2P 客户端 (命令行模式)，用户名: %s\n", name)
+	}
 	fmt.Println("===========================================")
 
 	node := NewP2PNode(name, webMode)
