@@ -57,6 +57,14 @@
                      <div id="emoji-picker" class="emoji-picker" style="display: none;">
                         <!-- 表情将由JS动态填充 -->
                     </div>
+                    <div id="file-transfer-controls" class="file-transfer-controls" style="display: none;">
+                        <span id="fileNameDisplay" class="file-name-display"></span>
+                        <select id="fileTargetUser" class="user-select">
+                            <option value="">选择接收文件的用户</option>
+                        </select>
+                        <button onclick="sendFile()" id="sendFileBtn" class="send-file-btn" disabled>发送文件</button>
+                        <button onclick="cancelFileSelection()" id="cancelFileBtn" class="cancel-btn">取消</button>
+                    </div>
                     <div class="input-group">
                         <input type="text" id="messageInput" placeholder="输入消息..." onkeypress="handleKeyPress(event)"
                             autocomplete="off">
@@ -70,14 +78,6 @@
                             <span class="button-text">发送</span>
                             <span class="loading-indicator" style="display: none;">⏳</span>
                         </button>
-                    </div>
-                    <div id="file-transfer-controls" class="file-transfer-controls" style="display: none;">
-                        <span id="fileNameDisplay" class="file-name-display"></span>
-                        <select id="fileTargetUser" class="user-select">
-                            <option value="">选择接收文件的用户</option>
-                        </select>
-                        <button onclick="sendFile()" id="sendFileBtn" class="send-file-btn" disabled>发送文件</button>
-                        <button onclick="cancelFileSelection()" id="cancelFileBtn" class="cancel-btn">取消</button>
                     </div>
                 </div>
             </div>

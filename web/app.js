@@ -9,10 +9,13 @@ let allMessages = [];
 let shownPendingTransfers = new Set();
 
 // =================================
-// 初始化
-// =================================
-function init() {
+async function init() {
     document.getElementById('messageInput').focus();
+    
+    // 先加载表情列表
+    await loadGifEmojis();
+    allEmojis = [...gifEmojis];
+    createEmojiGrid();
     
     // 初始加载数据
     loadUsers();
@@ -161,12 +164,16 @@ function createMessageElement(msg) {
 
     if (msg.content.startsWith('emoji:')) {
         const emojiId = msg.content.split(':')[1];
-        const emoji = emojis.find(e => e.id === emojiId);
+        const emoji = allEmojis.find(e => e.id === emojiId);
         if (emoji) {
             // Telegram风格的大表情显示
             const emojiContainer = document.createElement('div');
             emojiContainer.className = 'emoji-message';
-            emojiContainer.innerHTML = `<span class="emoji-large">${emoji.emoji}</span>`;
+            
+            if (emoji.type === 'gif') {
+                emojiContainer.innerHTML = `<img class="emoji-large-gif" src="/emoji-gifs/${emoji.filename}" alt="${emoji.name}">`;
+            }
+            
             contentDiv.appendChild(emojiContainer);
         } else {
             contentDiv.textContent = msg.content; // 如果找不到表情，则显示原始文本
@@ -389,29 +396,8 @@ function sendFileResponse(fileId, accepted) {
     .catch(error => showNotification('发送响应失败', 'error'));
 }
 
-// =================================
-// 表情功能 - Telegram风格
-// =================================
-const emojis = [
-    { id: 'smile', emoji: '😊', name: '微笑' },
-    { id: 'love', emoji: '😍', name: '爱心眼' },
-    { id: 'laugh', emoji: '😂', name: '大笑' },
-    { id: 'wow', emoji: '😮', name: '惊讶' },
-    { id: 'cry', emoji: '😢', name: '哭泣' },
-    { id: 'angry', emoji: '😠', name: '生气' },
-    { id: 'cool', emoji: '😎', name: '酷' },
-    { id: 'wink', emoji: '😉', name: '眨眼' },
-    { id: 'kiss', emoji: '😘', name: '飞吻' },
-    { id: 'thinking', emoji: '🤔', name: '思考' },
-    { id: 'thumbsup', emoji: '👍', name: '点赞' },
-    { id: 'thumbsdown', emoji: '👎', name: '点踩' },
-    { id: 'clap', emoji: '👏', name: '鼓掌' },
-    { id: 'fire', emoji: '🔥', name: '火' },
-    { id: 'heart', emoji: '❤️', name: '红心' },
-    { id: 'party', emoji: '🎉', name: '庆祝' },
-    { id: 'rocket', emoji: '🚀', name: '火箭' },
-    { id: 'star', emoji: '⭐', name: '星星' }
-];
+let gifEmojis = [];
+let allEmojis = [];
 
 function initEmojiPicker() {
     const emojiButton = document.getElementById('emoji-button');
@@ -429,21 +415,71 @@ function initEmojiPicker() {
             emojiPicker.style.display = 'none';
         }
     });
+}
 
-    // 创建表情网格
-    emojis.forEach(emoji => {
-        const emojiDiv = document.createElement('div');
-        emojiDiv.className = 'emoji-item';
-        emojiDiv.dataset.emojiId = emoji.id;
-        emojiDiv.title = emoji.name;
-        emojiDiv.innerHTML = `<span class="emoji-char">${emoji.emoji}</span>`;
-        emojiPicker.appendChild(emojiDiv);
-
-        emojiDiv.addEventListener('click', () => {
-            sendEmojiMessage(emoji.id);
-            emojiPicker.style.display = 'none';
+function loadGifEmojis() {
+    return fetch('/emoji-gifs-list')
+        .then(response => response.json())
+        .then(data => {
+            if (Array.isArray(data)) {
+                // 如果直接返回数组
+                gifEmojis = data.map(emoji => ({
+                    id: `gif-${emoji.id}`,
+                    name: emoji.name,
+                    filename: emoji.filename,
+                    type: 'gif'
+                }));
+            } else if (data.emojis && Array.isArray(data.emojis)) {
+                // 如果返回包装对象
+                gifEmojis = data.emojis.map(emoji => ({
+                    id: `gif-${emoji.id}`,
+                    name: emoji.name,
+                    filename: emoji.filename,
+                    type: 'gif'
+                }));
+            } else {
+                console.warn('无法加载 GIF 表情列表');
+                gifEmojis = [];
+            }
+            console.log(`已加载 ${gifEmojis.length} 个 GIF 表情`);
+        })
+        .catch(error => {
+            console.error('加载 GIF 表情失败:', error);
+            gifEmojis = [];
         });
+}
+
+function createEmojiGrid() {
+    const emojiPicker = document.getElementById('emoji-picker');
+    emojiPicker.innerHTML = ''; // 清空现有内容
+
+    // 如果有 GIF 表情，添加表情项
+    if (gifEmojis.length > 0) {
+        gifEmojis.forEach(emoji => {
+            const emojiDiv = createEmojiElement(emoji);
+            emojiPicker.appendChild(emojiDiv);
+        });
+    }
+}
+
+function createEmojiElement(emoji) {
+    const emojiDiv = document.createElement('div');
+    emojiDiv.className = 'emoji-item';
+    emojiDiv.dataset.emojiId = emoji.id;
+    emojiDiv.title = emoji.name;
+
+    if (emoji.type === 'static') {
+        emojiDiv.innerHTML = `<span class="emoji-char">${emoji.emoji}</span>`;
+    } else if (emoji.type === 'gif') {
+        emojiDiv.innerHTML = `<img class="emoji-gif" src="/emoji-gifs/${emoji.filename}" alt="${emoji.name}" loading="lazy">`;
+    }
+
+    emojiDiv.addEventListener('click', () => {
+        sendEmojiMessage(emoji.id);
+        document.getElementById('emoji-picker').style.display = 'none';
     });
+
+    return emojiDiv;
 }
 
 function sendEmojiMessage(emojiId) {

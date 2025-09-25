@@ -61,27 +61,6 @@
 - `/transfers` - 查看当前文件传输的状态列表。
 - `/quit` - 退出程序。
 
-## 📁 项目结构
-
-```
-LANShare/
-├── main.go              # 主入口点和命令行界面
-├── types.go             # 所有核心结构体定义
-├── network.go           # P2P网络连接和消息处理
-├── discovery.go         # UDP服务发现功能
-├── web.go               # 内嵌式Web服务器和API接口
-├── filetransfer.go      # 文件传输核心逻辑
-├── build.sh             # 跨平台构建脚本
-├── README.md            # 项目说明文档
-├── go.mod               # Go模块文件
-├── web/                 # [仅开发用] Web前端源文件，已嵌入程序
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
-├── build/               # [构建生成] 各平台可执行文件
-└── uploads/             # [自动生成] 用于临时存放Web上传的文件
-```
-
 ## 故障排除
 
 1. **无法发现其他用户**:
@@ -95,4 +74,11 @@ LANShare/
 
 ---
 
+## 其他
+
+[emoji来源](https://github.com/goforbg/telegram-emoji-gifs)
+
 **LANShare P2P** - 让局域网通信更简单！
+
+
+
