@@ -13,6 +13,7 @@ type P2PNode struct {
 	LocalPort int
 	Name      string
 	ID        string
+	Address   string // 新增：本地地址 "IP:port"
 
 	Listener   net.Listener
 	Peers      map[string]*Peer
@@ -34,26 +35,35 @@ type P2PNode struct {
 	// 文件传输相关
 	FileTransfers     map[string]*FileTransferStatus
 	FileTransfersMutex sync.RWMutex
+	ACLs              map[string]map[string]bool
+	ACLMutex          sync.RWMutex
 }
 
 // Peer结构体 - 对等节点结构
 type Peer struct {
-	ID       string
-	Name     string
-	Address  string
-	Conn     net.Conn
-	IsActive bool
-	LastSeen time.Time
+	ID        string
+	Name      string
+	Address   string
+	Conn      net.Conn
+	IsActive  bool
+	LastSeen  time.Time
+	SharedKey []byte // 新增：共享密钥
+	PrivateKey [32]byte // 临时私钥
+	PublicKey  [32]byte // 临时公钥
 }
 
 // Message结构体 - 通用消息结构
 type Message struct {
-	Type      string      `json:"type"`
-	From      string      `json:"from"`
-	To        string      `json:"to"`
-	Content   string      `json:"content"`
-	Timestamp time.Time   `json:"timestamp"`
-	Data      interface{} `json:"data,omitempty"`
+	Type        string      `json:"type"`
+	From        string      `json:"from"`
+	To          string      `json:"to"`
+	Content     string      `json:"content"`
+	Timestamp   time.Time   `json:"timestamp"`
+	Data        interface{} `json:"data,omitempty"`
+	Encrypted   bool        `json:"encrypted"`
+	Nonce       []byte      `json:"nonce,omitempty"`
+	Ciphertext  []byte      `json:"ciphertext,omitempty"`
+	SenderPubKey []byte     `json:"sender_pubkey,omitempty"`
 }
 
 // DiscoveryMessage结构体 - 服务发现消息结构
@@ -97,15 +107,23 @@ type FileTransferResponse struct {
 
 // FileChunk结构体 - 文件数据块
 type FileChunk struct {
-	Type      string    `json:"type"`
-	FileID    string    `json:"fileId"`
-	ChunkNum  int       `json:"chunkNum"`
-	TotalChunks int     `json:"totalChunks"`
-	Data      []byte    `json:"data"`
-	Timestamp time.Time `json:"timestamp"`
+	Type        string    `json:"type"`
+	FileID      string    `json:"fileId"`
+	ChunkNum    int       `json:"chunkNum"`
+	TotalChunks int       `json:"totalChunks"`
+	Data        []byte    `json:"data,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	Encrypted   bool      `json:"encrypted"`
+	Nonce       []byte    `json:"nonce,omitempty"`
+	Ciphertext  []byte    `json:"ciphertext,omitempty"`
 }
 
-// FileTransferStatus结构体 - 文件传输状态
+// ECDHKeyPair结构体 - ECDH密钥对
+type ECDHKeyPair struct {
+	PrivateKey [32]byte
+	PublicKey  [32]byte
+}
+
 type FileTransferStatus struct {
 	FileID      string    `json:"fileId"`
 	FileName    string    `json:"fileName"`
@@ -114,7 +132,8 @@ type FileTransferStatus struct {
 	Progress    int64     `json:"progress"`
 	Status      string    `json:"status"` // pending, transferring, completed, failed
 	Direction   string    `json:"direction"` // send, receive
-	PeerName   string    `json:"peerName"`
-	StartTime  time.Time `json:"startTime"`
-	EndTime    time.Time `json:"endTime"`
+	PeerName    string    `json:"peerName"`
+	FromID      string    `json:"-"`
+	StartTime   time.Time `json:"startTime"`
+	EndTime     time.Time `json:"endTime"`
 }

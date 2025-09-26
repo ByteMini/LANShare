@@ -272,12 +272,25 @@ func (node *P2PNode) sendFile(fileID string, filePath string) {
 		chunkData := buffer[:bytesRead]
 
 		chunk := FileChunk{
-			Type:      "file_chunk",
-			FileID:    fileID,
-			ChunkNum:  chunkNum,
+			Type:        "file_chunk",
+			FileID:      fileID,
+			ChunkNum:    chunkNum,
 			TotalChunks: totalChunks,
-			Data:      chunkData,
-			Timestamp: time.Now(),
+			Data:        chunkData,
+			Timestamp:   time.Now(),
+		}
+
+		// 加密 chunk Data
+		if len(targetPeer.SharedKey) > 0 {
+			ciphertext, nonce, err := encryptMessage([32]byte(targetPeer.SharedKey), chunkData)
+			if err == nil {
+				chunk.Encrypted = true
+				chunk.Nonce = nonce
+				chunk.Ciphertext = ciphertext
+				chunk.Data = nil // 清空明文
+			} else {
+				fmt.Printf("加密文件块失败: %v\n", err)
+			}
 		}
 
 		msg := Message{
@@ -340,15 +353,37 @@ func (node *P2PNode) handleFileChunk(chunk FileChunk) {
 	}
 	defer file.Close()
 
+	// 解密 Data
+	var chunkData []byte
+	if chunk.Encrypted && len(chunk.Nonce) > 0 && len(chunk.Ciphertext) > 0 {
+		node.PeersMutex.RLock()
+		senderPeer, exists := node.Peers[transfer.PeerName] // 假设 PeerName 是 From ID
+		node.PeersMutex.RUnlock()
+		if exists && len(senderPeer.SharedKey) > 0 {
+			plaintext, err := decryptMessage([32]byte(senderPeer.SharedKey), chunk.Ciphertext, chunk.Nonce)
+			if err == nil {
+				chunkData = plaintext
+			} else {
+				fmt.Printf("解密文件块失败: %v\n", err)
+				return
+			}
+		} else {
+			fmt.Printf("无密钥解密文件块\n")
+			return
+		}
+	} else {
+		chunkData = chunk.Data
+	}
+
 	// 写入数据
-	if _, err := file.Write(chunk.Data); err != nil {
+	if _, err := file.Write(chunkData); err != nil {
 		fmt.Printf("写入文件块失败: %v\n", err)
 		return
 	}
 
 	// 更新进度
 	node.FileTransfersMutex.Lock()
-	transfer.Progress += int64(len(chunk.Data))
+	transfer.Progress += int64(len(chunkData))
 	
 	// 检查是否完成
 	if transfer.Progress >= transfer.FileSize {

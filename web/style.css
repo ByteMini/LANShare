@@ -129,6 +129,48 @@ body {
     cursor: pointer;
     transition: all 0.2s ease;
     font-size: 0.95em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.users-list li.blocked {
+    opacity: 0.5;
+    background: rgba(142, 142, 147, 0.1);
+    color: var(--text-secondary);
+}
+
+.users-list li.blocked:hover {
+    background: rgba(142, 142, 147, 0.15);
+}
+
+.block-btn {
+    background: rgba(255, 59, 48, 0.1);
+    color: var(--error-color);
+    border: 1px solid rgba(255, 59, 48, 0.3);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-width: 40px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.block-btn:hover {
+    background: rgba(255, 59, 48, 0.2);
+    transform: scale(1.05);
+}
+
+.block-btn:disabled {
+    background: rgba(52, 199, 89, 0.1);
+    color: var(--success-color);
+    border-color: rgba(52, 199, 89, 0.3);
+    cursor: default;
+    transform: none;
 }
 
 .users-list li:not(.own):hover {

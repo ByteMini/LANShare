@@ -124,7 +124,11 @@ func (node *P2PNode) startWebGUI() {
 		node.PeersMutex.RLock()
 		for _, peer := range node.Peers {
 			if peer.IsActive {
-				users = append(users, peer.Name)
+				status := ""
+				if node.isBlocked(peer.Address) {
+					status = " (屏蔽)"
+				}
+				users = append(users, peer.Name + status)
 			}
 		}
 		node.PeersMutex.RUnlock()
@@ -132,6 +136,36 @@ func (node *P2PNode) startWebGUI() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"users": users,
+		})
+	})
+
+	// 获取屏蔽列表处理器
+	mux.HandleFunc("/acl", func(w http.ResponseWriter, r *http.Request) {
+		node.ACLMutex.RLock()
+		defer node.ACLMutex.RUnlock()
+		
+		blocked := []string{}
+		if acl, exists := node.ACLs[node.Address]; exists {
+			for addr, allowed := range acl {
+				if !allowed {
+					// 查找用户名
+					displayName := addr
+					node.PeersMutex.RLock()
+					for _, peer := range node.Peers {
+						if peer.Address == addr {
+							displayName = peer.Name
+							break
+						}
+					}
+					node.PeersMutex.RUnlock()
+					blocked = append(blocked, displayName)
+				}
+			}
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"blocked": blocked,
 		})
 	})
 
