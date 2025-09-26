@@ -7,9 +7,23 @@ let localUsername = '';
 let currentChat = { id: 'all', name: '公聊' };
 let allMessages = [];
 let shownPendingTransfers = new Set();
+let blockedUsers = new Set();
+
+// =================================
+async function loadBlockedUsers() {
+    try {
+        const response = await fetch('/acl');
+        const data = await response.json();
+        blockedUsers = new Set(data.blocked || []);
+    } catch (error) {
+        console.error('加载屏蔽列表失败:', error);
+        blockedUsers = new Set();
+    }
+}
 
 // =================================
 async function init() {
+    console.log('初始化开始');
     document.getElementById('messageInput').focus();
     
     // 先加载表情列表
@@ -18,13 +32,17 @@ async function init() {
     createEmojiGrid();
     
     // 初始加载数据
+    await loadBlockedUsers();
     loadUsers();
     loadMessages();
     loadFileTransfers();
     
     // 设置定时器
     setInterval(loadMessages, 2000); // 消息可以稍微慢一点
-    setInterval(loadUsers, 3000);    // 用户列表不需要太频繁
+    setInterval(() => {
+        loadBlockedUsers();
+        loadUsers();
+    }, 3000);    // 用户列表不需要太频繁
     setInterval(loadFileTransfers, 3000);
     setInterval(checkConnection, 5000); // 添加连接检查
     
@@ -86,8 +104,12 @@ function sendMessage() {
         return;
     }
 
-    // 如果是私聊，隐式地添加命令前缀
+    // 如果是私聊，检查是否屏蔽
     if (currentChat.id !== 'all') {
+        if (blockedUsers.has(currentChat.name)) {
+            showNotification(`请先解除对${currentChat.name}的屏蔽`, 'warning');
+            return;
+        }
         message = `/to ${currentChat.name} ${message}`;
     }
     
@@ -222,13 +244,31 @@ function displayUsers(users) {
             const username = user.split(' ')[0];
             newUsers.add(username);
             
-            if (!existingUsers.has(username)) {
+            const isBlocked = blockedUsers.has(username);
+            const buttonText = isBlocked ? '🔓' : '🚫';
+            const buttonTitle = isBlocked ? '解除屏蔽' : '屏蔽用户';
+            const liClass = isBlocked ? 'blocked' : '';
+
+            let li;
+            if (existingUsers.has(username)) {
+                // 更新现有用户
+                li = usersList.querySelector(`li[data-chat-id="${username}"]`);
+                li.className = liClass;
+                const btn = li.querySelector('.block-btn');
+                btn.textContent = buttonText;
+                btn.title = buttonTitle;
+            } else {
                 // 添加新用户
-                const li = document.createElement('li');
+                li = document.createElement('li');
+                li.className = liClass;
                 li.dataset.chatId = username;
                 li.dataset.chatName = username;
-                li.textContent = `👤 ${username}`;
-                li.onclick = () => switchChat(li);
+                li.innerHTML = `👤 ${username} <button class="block-btn" onclick="blockUser('${username}', event)" title="${buttonTitle}">${buttonText}</button>`;
+                li.addEventListener('click', (e) => {
+                    if (!e.target.classList.contains('block-btn')) {
+                        switchChat(li);
+                    }
+                });
                 usersList.appendChild(li);
             }
         }
@@ -396,6 +436,9 @@ function sendFileResponse(fileId, accepted) {
     .catch(error => showNotification('发送响应失败', 'error'));
 }
 
+// =================================
+// 表情处理
+// =================================
 let gifEmojis = [];
 let allEmojis = [];
 
@@ -569,10 +612,34 @@ function showNotification(message, type = 'info') {
 }
 
 // =================================
-// 启动
+// 屏蔽用户功能
 // =================================
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-} else {
-    init();
+function blockUser(username, event) {
+    event.stopPropagation(); // 防止触发li的click事件
+
+    const isCurrentlyBlocked = blockedUsers.has(username);
+    const command = isCurrentlyBlocked ? `/unblock ${username}` : `/block ${username}`;
+    const action = isCurrentlyBlocked ? '解除屏蔽' : '屏蔽';
+    const message = `${action}用户 ${username}`;
+
+    fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: command })
+    })
+    .then(response => {
+        if (response.ok) {
+            // 重新加载屏蔽列表以同步状态
+            loadBlockedUsers().then(() => {
+                loadUsers();
+                showNotification(message + '成功', 'success');
+            });
+        } else {
+            throw new Error(`${action}失败`);
+        }
+    })
+    .catch(error => {
+        console.error(`${action}用户失败:`, error);
+        showNotification(`${action}用户失败，请重试`, 'error');
+    });
 }

@@ -1,12 +1,69 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"time"
+	"golang.org/x/crypto/curve25519"
 )
+
+// ECDH密钥生成
+func generateECDHKeyPair() (privateKey [32]byte, publicKey [32]byte, err error) {
+	_, err = rand.Read(privateKey[:])
+	if err != nil {
+		return
+	}
+	var publicKeyBytes [32]byte
+	curve25519.ScalarBaseMult(&publicKeyBytes, &privateKey)
+	copy(publicKey[:], publicKeyBytes[:])
+	return
+}
+
+// 派生共享密钥
+func deriveSharedKey(privateKey [32]byte, remotePubKey [32]byte) [32]byte {
+	var shared [32]byte
+	var remotePub [32]byte
+	copy(remotePub[:], remotePubKey[:])
+	curve25519.ScalarMult(&shared, &privateKey, &remotePub)
+	return shared
+}
+
+// 加密消息
+func encryptMessage(key [32]byte, plaintext []byte) (ciphertext []byte, nonce []byte, err error) {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return
+	}
+	nonce = make([]byte, aesGCM.NonceSize())
+	if _, err = rand.Read(nonce); err != nil {
+		return
+	}
+	ciphertext = aesGCM.Seal(nil, nonce, plaintext, nil)
+	return
+}
+
+// 解密消息
+func decryptMessage(key [32]byte, ciphertext []byte, nonce []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return aesGCM.Open(nil, nonce, ciphertext, nil)
+}
 
 // 连接到对等节点
 func (node *P2PNode) connectToPeer(ip string, port int, id, name string) {
@@ -42,11 +99,22 @@ func (node *P2PNode) connectToPeer(ip string, port int, id, name string) {
 
 	fmt.Printf("成功连接到节点: %s (%s)\n", name, address)
 
+	// 生成密钥对
+	privateKey, publicKey, err := generateECDHKeyPair()
+	if err != nil {
+		fmt.Printf("密钥生成失败: %v\n", err)
+		conn.Close()
+		return
+	}
+	peer.PrivateKey = privateKey
+	peer.PublicKey = publicKey
+
 	handshakeMsg := Message{
-		Type:      "handshake",
-		From:      node.ID,
-		Content:   node.Name,
-		Timestamp: time.Now(),
+		Type:        "handshake",
+		From:        node.ID,
+		Content:     node.Name,
+		Timestamp:   time.Now(),
+		SenderPubKey: publicKey[:],
 	}
 	node.sendMessageToPeer(peer, handshakeMsg)
 
@@ -83,20 +151,54 @@ func (node *P2PNode) handleIncomingConnection(conn net.Conn) {
 		return
 	}
 
-	peer := &Peer{
-		ID:       handshakeMsg.From,
-		Name:     handshakeMsg.Content,
-		Address:  conn.RemoteAddr().String(),
-		Conn:     conn,
-		IsActive: true,
-		LastSeen: time.Now(),
+	// 提取远程公钥
+	var remotePubKey [32]byte
+	if len(handshakeMsg.SenderPubKey) == 32 {
+		copy(remotePubKey[:], handshakeMsg.SenderPubKey)
+	} else {
+		conn.Close()
+		return
 	}
+
+	peer := &Peer{
+		Conn: conn,
+	}
+
+	// 生成自己的密钥对
+	privateKey, publicKey, err := generateECDHKeyPair()
+	if err != nil {
+		fmt.Printf("密钥生成失败: %v\n", err)
+		conn.Close()
+		return
+	}
+	peer.PrivateKey = privateKey
+	peer.PublicKey = publicKey
+
+	// 派生共享密钥
+	shared := deriveSharedKey(privateKey, remotePubKey)
+	peer.SharedKey = shared[:]
+
+	peer.ID = handshakeMsg.From
+	peer.Name = handshakeMsg.Content
+	peer.Address = conn.RemoteAddr().String()
+	peer.IsActive = true
+	peer.LastSeen = time.Now()
 
 	node.PeersMutex.Lock()
 	node.Peers[peer.ID] = peer
 	node.PeersMutex.Unlock()
 
 	fmt.Printf("接受来自节点的连接: %s (%s)\n", peer.Name, peer.Address)
+
+	// 发送握手响应
+	responseMsg := Message{
+		Type:        "handshake_response",
+		From:        node.ID,
+		Content:     node.Name,
+		Timestamp:   time.Now(),
+		SenderPubKey: publicKey[:],
+	}
+	node.sendMessageToPeer(peer, responseMsg)
 
 	go node.handlePeerConnection(peer)
 }
@@ -131,16 +233,62 @@ func (node *P2PNode) handleMessages() {
 	for msg := range node.MessageChan {
 		switch msg.Type {
 		case "chat":
+			// 解密聊天消息
+			var content string
+			if msg.Encrypted && len(msg.Nonce) > 0 && len(msg.Ciphertext) > 0 {
+				// 查找发送方 peer 以获取共享密钥
+				node.PeersMutex.RLock()
+				senderPeer, exists := node.Peers[msg.From]
+				node.PeersMutex.RUnlock()
+				if exists && len(senderPeer.SharedKey) > 0 {
+					plaintext, err := decryptMessage([32]byte(senderPeer.SharedKey), msg.Ciphertext, msg.Nonce)
+					if err == nil {
+						content = string(plaintext)
+					} else {
+						fmt.Printf("解密失败: %v\n", err)
+						content = "[解密失败]"
+					}
+				} else {
+					content = "[无密钥]"
+				}
+			} else {
+				content = msg.Content
+			}
+
+			senderPeer, exists := node.Peers[msg.From]
+			if !exists {
+				continue
+			}
 			senderName := node.getPeerName(msg.From)
 			if msg.To == "" || msg.To == "all" {
 				// 公聊消息
-				node.addChatMessage(senderName, "all", msg.Content, false, false)
+				if node.isBlocked(senderPeer.Address) {
+					continue
+				}
+				node.addChatMessage(senderName, "all", content, false, false)
 			} else if msg.To == node.ID {
 				// 私聊消息
-				node.addChatMessage(senderName, node.Name, msg.Content, false, true)
+				if node.isBlocked(senderPeer.Address) {
+					continue
+				}
+				node.addChatMessage(senderName, node.Name, content, false, true)
 			}
 		case "handshake":
 			// 握手消息已在连接处理中处理
+		case "handshake_response":
+			// 握手响应 - 派生共享密钥
+			node.PeersMutex.Lock()
+			var peer *Peer
+			var exists bool
+			peer, exists = node.Peers[msg.From]
+			if exists && len(msg.SenderPubKey) == 32 {
+				var remotePub [32]byte
+				copy(remotePub[:], msg.SenderPubKey)
+				shared := deriveSharedKey(peer.PrivateKey, remotePub)
+				peer.SharedKey = shared[:]
+				fmt.Printf("与 %s 建立加密连接\n", peer.Name)
+			}
+			node.PeersMutex.Unlock()
 		case "file_request":
 			// 文件传输请求
 			if data, ok := msg.Data.(map[string]interface{}); ok {
@@ -194,6 +342,19 @@ func (node *P2PNode) getPeerName(peerID string) string {
 
 // 发送消息到对等节点
 func (node *P2PNode) sendMessageToPeer(peer *Peer, msg Message) error {
+	if len(peer.SharedKey) > 0 && msg.Type == "chat" {
+		// 加密聊天消息
+		plaintext := []byte(msg.Content)
+		ciphertext, nonce, err := encryptMessage([32]byte(peer.SharedKey), plaintext)
+		if err != nil {
+			return err
+		}
+		msg.Encrypted = true
+		msg.Nonce = nonce
+		msg.Ciphertext = ciphertext
+		msg.Content = "" // 清空明文
+	}
+
 	encoder := json.NewEncoder(peer.Conn)
 	return encoder.Encode(msg)
 }
@@ -256,18 +417,18 @@ func getLocalIP() string {
 		fmt.Printf("  %d. %s: %s\n", i+1, interfaceNames[i], ip)
 	}
 
+	var choice int
 	for {
-		fmt.Printf("发现多个网络接口，请选择要使用的接口 (1-%d): ", len(availableIPs))
-		var choice int
-		_, err := fmt.Scanf("%d", &choice)
-		if err != nil || choice < 1 || choice > len(availableIPs) {
-			fmt.Println("无效选择，请重新输入")
-			continue
+		fmt.Print("请选择网络接口 (1-" + strconv.Itoa(len(availableIPs)) + "): ")
+		_, err := fmt.Scanln(&choice)
+		if err == nil && choice >= 1 && choice <= len(availableIPs) {
+			break
 		}
-
-		selectedIP := availableIPs[choice-1]
-		selectedInterface := interfaceNames[choice-1]
-		fmt.Printf("已选择网络接口: %s (%s)\n", selectedInterface, selectedIP)
-		return selectedIP
+		fmt.Println("无效选择，请重试。")
 	}
+
+	selectedIP := availableIPs[choice-1]
+	selectedName := interfaceNames[choice-1]
+	fmt.Printf("使用网络接口: %s (%s)\n", selectedName, selectedIP)
+	return selectedIP
 }

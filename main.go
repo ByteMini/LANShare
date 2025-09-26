@@ -8,19 +8,24 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // 创建新的P2P节点
-func NewP2PNode(name string, webEnabled bool) *P2PNode {
-	localIP := getLocalIP()
+func NewP2PNode(name string, webEnabled bool, localIP string) *P2PNode {
+	if localIP == "" {
+		localIP = getLocalIP()
+	}
 	nodeID := fmt.Sprintf("%s_%d", localIP, time.Now().Unix())
+	address := fmt.Sprintf("%s:%d", localIP, 8888)
 	
 	return &P2PNode{
 		LocalIP:       localIP,
 		LocalPort:     8888,
 		Name:          name,
 		ID:            nodeID,
+		Address:       address,
 		Peers:         make(map[string]*Peer),
 		MessageChan:   make(chan Message, 100),
 		Running:       false,
@@ -29,6 +34,91 @@ func NewP2PNode(name string, webEnabled bool) *P2PNode {
 		Messages:      make([]ChatMessage, 0),
 		WebEnabled:    webEnabled,
 		FileTransfers: make(map[string]*FileTransferStatus),
+		ACLs:          make(map[string]map[string]bool),
+		ACLMutex:      sync.RWMutex{},
+	}
+}
+
+// ACL 方法实现
+func (node *P2PNode) isBlocked(targetAddress string) bool {
+	node.ACLMutex.RLock()
+	defer node.ACLMutex.RUnlock()
+	if acl, exists := node.ACLs[node.Address]; exists {
+		if val, ok := acl[targetAddress]; ok {
+			return !val
+		}
+	}
+	return false
+}
+
+func (node *P2PNode) blockUser(targetAddress string) {
+	node.ACLMutex.Lock()
+	defer node.ACLMutex.Unlock()
+	if node.ACLs[node.Address] == nil {
+		node.ACLs[node.Address] = make(map[string]bool)
+	}
+	node.ACLs[node.Address][targetAddress] = false
+	// 查找用户名显示
+	displayName := targetAddress
+	node.PeersMutex.RLock()
+	for _, peer := range node.Peers {
+		if peer.Address == targetAddress {
+			displayName = peer.Name
+			break
+		}
+	}
+	node.PeersMutex.RUnlock()
+	fmt.Printf("已屏蔽用户 %s (%s)\n", displayName, targetAddress)
+}
+
+func (node *P2PNode) unblockUser(targetAddress string) {
+	node.ACLMutex.Lock()
+	defer node.ACLMutex.Unlock()
+	if node.ACLs[node.Address] == nil {
+		node.ACLs[node.Address] = make(map[string]bool)
+	}
+	node.ACLs[node.Address][targetAddress] = true
+	// 查找用户名显示
+	displayName := targetAddress
+	node.PeersMutex.RLock()
+	for _, peer := range node.Peers {
+		if peer.Address == targetAddress {
+			displayName = peer.Name
+			break
+		}
+	}
+	node.PeersMutex.RUnlock()
+	fmt.Printf("已解除屏蔽用户 %s (%s)\n", displayName, targetAddress)
+}
+
+func (node *P2PNode) showACL() {
+	node.ACLMutex.RLock()
+	defer node.ACLMutex.RUnlock()
+	
+	fmt.Println("屏蔽列表:")
+	if acl, exists := node.ACLs[node.Address]; exists {
+		blocked := 0
+		for addr, allowed := range acl {
+			if !allowed {
+				// 查找用户名
+				displayName := addr
+				node.PeersMutex.RLock()
+				for _, peer := range node.Peers {
+					if peer.Address == addr {
+						displayName = peer.Name
+						break
+					}
+				}
+				node.PeersMutex.RUnlock()
+				fmt.Printf(" - %s (%s)\n", displayName, addr)
+				blocked++
+			}
+		}
+		if blocked == 0 {
+			fmt.Println("  无屏蔽用户")
+		}
+	} else {
+		fmt.Println("  无屏蔽用户")
 	}
 }
 
@@ -82,6 +172,10 @@ func (node *P2PNode) showCommandHelp() {
 	fmt.Println("  /name <新名称> - 更改用户名")
 	fmt.Println("  /web [端口] - 打开Web界面 (默认8080)")
 	fmt.Println("  /webstop - 关闭Web界面")
+	fmt.Println("  /webstatus - 查看Web状态")
+	fmt.Println("  /block <用户名> - 屏蔽用户")
+	fmt.Println("  /unblock <用户名> - 解除屏蔽")
+	fmt.Println("  /acl - 查看屏蔽列表")
 	fmt.Println("  /help - 显示帮助信息")
 	fmt.Println("  /quit - 退出程序")
 	fmt.Println("===========================================")
@@ -146,11 +240,12 @@ func (node *P2PNode) handleCommand(command string) {
 		message := strings.Join(parts[2:], " ")
 		
 		// 查找目标用户
-		var targetID string
+		var targetID, targetAddress string
 		node.PeersMutex.RLock()
 		for id, peer := range node.Peers {
-			if peer.Name == targetName {
+			if peer.Name == targetName && peer.IsActive {
 				targetID = id
+				targetAddress = peer.Address
 				break
 			}
 		}
@@ -158,6 +253,11 @@ func (node *P2PNode) handleCommand(command string) {
 		
 		if targetID == "" {
 			fmt.Printf("用户 %s 不在线\n", targetName)
+			return
+		}
+		
+		if node.isBlocked(targetAddress) {
+			fmt.Printf("用户 %s 被屏蔽，无法发送私聊\n", targetName)
 			return
 		}
 		
@@ -181,7 +281,12 @@ func (node *P2PNode) handleCommand(command string) {
 		node.PeersMutex.RLock()
 		for _, peer := range node.Peers {
 			if peer.IsActive {
-				fmt.Printf("  %s (%s)\n", peer.Name, peer.Address)
+				blocked := node.isBlocked(peer.Address)
+				status := ""
+				if blocked {
+					status = " (屏蔽)"
+				}
+				fmt.Printf("  %s%s (%s)\n", peer.Name, status, peer.Address)
 			}
 		}
 		node.PeersMutex.RUnlock()
@@ -220,11 +325,7 @@ func (node *P2PNode) handleCommand(command string) {
 			}
 			
 			node.startWebGUI()
-			fmt.Println("Web界面已启用")
 		}
-		webURL := fmt.Sprintf("http://127.0.0.1:%d", node.WebPort)
-		fmt.Printf("Web界面地址: %s\n", webURL)
-		// openBrowser(webURL)  // 注释掉自动打开浏览器的功能
 		
 	case "/webstop":
 		if !node.WebEnabled {
@@ -233,6 +334,57 @@ func (node *P2PNode) handleCommand(command string) {
 		}
 		node.stopWebGUI()
 		
+	case "/block":
+		if len(parts) < 2 {
+			fmt.Println("用法: /block <用户名>")
+			return
+		}
+		targetName := parts[1]
+		// 查找目标地址
+		var targetAddress string
+		node.PeersMutex.RLock()
+		for _, peer := range node.Peers {
+			if peer.Name == targetName && peer.IsActive {
+				targetAddress = peer.Address
+				break
+			}
+		}
+		node.PeersMutex.RUnlock()
+		
+		if targetAddress == "" {
+			fmt.Printf("用户 %s 不在线，无法屏蔽\n", targetName)
+			return
+		}
+		node.blockUser(targetAddress)
+		
+	case "/unblock":
+		if len(parts) < 2 {
+			fmt.Println("用法: /unblock <用户名>")
+			return
+		}
+		targetName := parts[1]
+		// 查找目标地址
+		var targetAddress string
+		node.PeersMutex.RLock()
+		for _, peer := range node.Peers {
+			if peer.Name == targetName && peer.IsActive {
+				targetAddress = peer.Address
+				break
+			}
+		}
+		node.PeersMutex.RUnlock()
+		
+		if targetAddress == "" {
+			fmt.Printf("用户 %s 不在线，但仍可解除屏蔽\n", targetName)
+			// 尝试直接用用户名作为地址（向后兼容，但不推荐）
+			node.unblockUser(targetName)
+			return
+		}
+		node.unblockUser(targetAddress)
+		
+	case "/acl":
+		node.showACL()
+		
 	case "/send":
 		if len(parts) < 3 {
 			fmt.Println("用法: /send <用户名> <文件路径>")
@@ -240,6 +392,28 @@ func (node *P2PNode) handleCommand(command string) {
 		}
 		targetName := parts[1]
 		filePath := strings.Join(parts[2:], " ")
+		
+		// 查找目标用户
+		var targetID, targetAddress string
+		node.PeersMutex.RLock()
+		for id, peer := range node.Peers {
+			if peer.Name == targetName && peer.IsActive {
+				targetID = id
+				targetAddress = peer.Address
+				break
+			}
+		}
+		node.PeersMutex.RUnlock()
+		
+		if targetID == "" {
+			fmt.Printf("用户 %s 不在线\n", targetName)
+			return
+		}
+		
+		if node.isBlocked(targetAddress) {
+			fmt.Printf("用户 %s 被屏蔽，无法发送文件\n", targetName)
+			return
+		}
 		node.sendFileTransferRequest(filePath, targetName)
 		
 	case "/transfers":
@@ -258,6 +432,14 @@ func (node *P2PNode) handleCommand(command string) {
 			return
 		}
 		node.respondToFileTransfer(parts[1], false)
+		
+	case "/webstatus":
+		if node.WebEnabled {
+			webURL := fmt.Sprintf("http://127.0.0.1:%d", node.WebPort)
+			fmt.Printf("Web界面已启用\n地址: %s\n端口: %d\n", webURL, node.WebPort)
+		} else {
+			fmt.Println("Web界面未启用")
+		}
 		
 	case "/help":
 		node.showCommandHelp()
@@ -329,9 +511,6 @@ func main() {
 
 	// 默认不启用 Web 模式
 	webMode := false
-	if cliMode {
-		webMode = false
-	}
 
 	// 获取用户名
 	if name == "" {
@@ -348,15 +527,34 @@ func main() {
 			}
 		}
 	}
+
+	// 先选择网络接口
+	localIP := getLocalIP()
+
+	// 然后选择Web模式
+	webMode = false
+	fmt.Print("是否启用Web界面? (y/N): ")
+	var webInput string
+	fmt.Scanln(&webInput)
+	if strings.ToLower(strings.TrimSpace(webInput)) == "y" {
+		webMode = true
+	}
+
+	node := NewP2PNode(name, webMode, localIP)
 	
 	if webMode {
-		fmt.Printf("启动 P2P 客户端 (Web模式)，用户名: %s\n", name)
-	} else {
-		fmt.Printf("启动 P2P 客户端 (命令行模式)，用户名: %s\n", name)
+		fmt.Print("请输入Web端口 (默认8080): ")
+		var portInput string
+		fmt.Scanln(&portInput)
+		if portInput != "" {
+			if port, err := strconv.Atoi(portInput); err == nil && port > 0 && port < 65536 {
+				node.WebPort = port
+				fmt.Printf("Web端口设置为: %d\n", port)
+			} else {
+				fmt.Println("无效端口，使用默认8080")
+			}
+		}
 	}
-	fmt.Println("===========================================")
-
-	node := NewP2PNode(name, webMode)
 	
 	if err := node.Start(); err != nil {
 		fmt.Printf("启动P2P节点失败: %v\n", err)
