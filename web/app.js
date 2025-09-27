@@ -446,8 +446,22 @@ function initEmojiPicker() {
     const emojiButton = document.getElementById('emoji-button');
     const emojiPicker = document.getElementById('emoji-picker');
 
-    emojiButton.addEventListener('click', (e) => {
+    emojiButton.addEventListener('click', async (e) => {
         e.stopPropagation();
+        
+        // 检查表情资源是否存在
+        try {
+            const response = await fetch('/check-emoji-dir');
+            const data = await response.json();
+            if (!data.exists) {
+                showEmojiAlert('当前表情资源缺少，若需表情资源请到https://github.com/ByteMini/telegram-emoji-gifs/releases/download/1.0.0/emoji.zip下载');
+                return;
+            }
+        } catch (error) {
+            console.error('检查表情目录失败:', error);
+            // 检查失败时仍尝试显示（假设存在）
+        }
+        
         const isVisible = emojiPicker.style.display === 'grid';
         emojiPicker.style.display = isVisible ? 'none' : 'grid';
     });
@@ -526,22 +540,52 @@ function createEmojiElement(emoji) {
 }
 
 function sendEmojiMessage(emojiId) {
-    let message = `emoji:${emojiId}`;
+    // 检查表情资源是否存在
+    fetch('/check-emoji-dir')
+        .then(response => response.json())
+        .then(data => {
+            if (!data.exists) {
+                showEmojiAlert('当前表情资源缺少，若需表情资源请到https://github.com/ByteMini/telegram-emoji-gifs/releases/download/1.0.0/emoji.zip下载');
+                return;
+            }
+            
+            // 资源存在，继续发送
+            let message = `emoji:${emojiId}`;
+            
+            // 如果是私聊，添加命令前缀，就像sendMessage函数一样
+            if (currentChat.id !== 'all') {
+                message = `/to ${currentChat.name} ${message}`;
+            }
+            
+            fetch('/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            })
+            .catch(error => {
+                console.error('发送表情失败:', error);
+                showNotification('发送表情失败，请重试', 'error');
+            });
+        })
+        .catch(error => {
+            console.error('检查表情目录失败:', error);
+            // 即使检查失败，也尝试发送（假设资源存在）
+            let message = `emoji:${emojiId}`;
+            if (currentChat.id !== 'all') {
+                message = `/to ${currentChat.name} ${message}`;
+            }
+            fetch('/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            })
+            .catch(error => {
+                console.error('发送表情失败:', error);
+                showNotification('发送表情失败，请重试', 'error');
+            });
+        });
     
-    // 如果是私聊，添加命令前缀，就像sendMessage函数一样
-    if (currentChat.id !== 'all') {
-        message = `/to ${currentChat.name} ${message}`;
-    }
-    
-    fetch('/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message })
-    })
-    .catch(error => {
-        console.error('发送表情失败:', error);
-        showNotification('发送表情失败，请重试', 'error');
-    });
+    document.getElementById('emoji-picker').style.display = 'none';
 }
 
 // =================================
@@ -642,4 +686,29 @@ function blockUser(username, event) {
         console.error(`${action}用户失败:`, error);
         showNotification(`${action}用户失败，请重试`, 'error');
     });
+}
+
+// 添加自定义警报函数
+function showEmojiAlert(message) {
+    const dialog = document.getElementById('emoji-alert-dialog');
+    const messageEl = document.getElementById('alert-message');
+    const okBtn = document.getElementById('alert-ok-btn');
+
+    messageEl.textContent = message;
+    dialog.style.display = 'flex';
+    setTimeout(() => dialog.classList.add('visible'), 10);
+
+    const hideDialog = () => {
+        dialog.classList.remove('visible');
+        setTimeout(() => {
+            dialog.style.display = 'none';
+        }, 300);
+    };
+
+    okBtn.onclick = hideDialog;
+
+    // 点击遮罩关闭
+    dialog.onclick = (e) => {
+        if (e.target === dialog) hideDialog();
+    };
 }
