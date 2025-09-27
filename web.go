@@ -284,6 +284,16 @@ func (node *P2PNode) startWebGUI() {
 		go node.stopWebGUI()
 	})
 
+	// 检查表情目录处理器
+	mux.HandleFunc("/check-emoji-dir", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := os.Stat("assets/emoji-gifs"); os.IsNotExist(err) {
+			json.NewEncoder(w).Encode(map[string]bool{"exists": false})
+		} else {
+			json.NewEncoder(w).Encode(map[string]bool{"exists": true})
+		}
+	})
+
 	// 创建HTTP服务器
 	node.WebServer = &http.Server{
 		Addr:    fmt.Sprintf("127.0.0.1:%d", node.WebPort),

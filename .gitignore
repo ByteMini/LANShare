@@ -5,6 +5,9 @@ build/
 *.deb
 *.rpm
 
+assets/
+examples/
+
 # Go相关
 *.mod.sum
 vendor/
