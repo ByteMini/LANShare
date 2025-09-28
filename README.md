@@ -80,11 +80,14 @@
 3. **文件传输失败**:
    - 确认接收方有足够的磁盘空间。
    - 检查发送方对文件是否有读取权限。
+4. **消息解密失败**：
+   - 重启应用
 
 ---
 
 ## 其他
 
-[emoji来源](https://github.com/goforbg/telegram-emoji-gifs)
+需要emoji到[这里](https://github.com/ByteMini/telegram-emoji-gifs/releases/download/1.0.0/emoji.zip)，解压后将assets/emoji-gifs目录和可执行文件放在同一目录
 
+[emoji来源](https://github.com/goforbg/telegram-emoji-gifs)
 
