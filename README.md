@@ -67,6 +67,7 @@
 - `/block <用户名>` - 屏蔽指定用户，阻止其消息和文件传输
 - `/unblock <用户名>` - 解除对指定用户的屏蔽
 - `/acl` - 查看当前屏蔽的用户列表
+- `/history [用户名] [条数]` - 查看历史消息（默认公聊，最近20条）
 - `/help` - 显示帮助信息
 - `/quit` - 退出程序
 
@@ -82,6 +83,11 @@
    - 检查发送方对文件是否有读取权限。
 4. **消息解密失败**：
    - 重启应用
+5. **历史消息问题**:
+   - 消息存储在当前目录的 message.db 文件中。如果文件损坏，重启应用会重新创建。
+   - 历史消息保留30天，自动清理旧消息。
+
+**注意**: 新增历史消息功能使用 SQLite 数据库 (message.db)，所有消息内容加密存储以保护隐私。
 
 ---
 
@@ -90,4 +96,3 @@
 需要emoji到[这里](https://github.com/ByteMini/telegram-emoji-gifs/releases/download/1.0.0/emoji.zip)，解压后将assets/emoji-gifs目录和可执行文件放在同一目录
 
 [emoji来源](https://github.com/goforbg/telegram-emoji-gifs)
-

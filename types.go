@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	_ "github.com/mattn/go-sqlite3"
 	"net"
 	"net/http"
 	"sync"
@@ -37,6 +39,8 @@ type P2PNode struct {
 	FileTransfersMutex sync.RWMutex
 	ACLs              map[string]map[string]bool
 	ACLMutex          sync.RWMutex
+	DB                *sql.DB
+	LocalDBKey        [32]byte
 }
 
 // Peer结构体 - 对等节点结构

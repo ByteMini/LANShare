@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"database/sql"
 	"flag"
 	"fmt"
 	"net"
@@ -20,7 +21,7 @@ func NewP2PNode(name string, webEnabled bool, localIP string) *P2PNode {
 	nodeID := fmt.Sprintf("%s_%d", localIP, time.Now().Unix())
 	address := fmt.Sprintf("%s:%d", localIP, 8888)
 	
-	return &P2PNode{
+	node := &P2PNode{
 		LocalIP:       localIP,
 		LocalPort:     8888,
 		Name:          name,
@@ -37,6 +38,57 @@ func NewP2PNode(name string, webEnabled bool, localIP string) *P2PNode {
 		ACLs:          make(map[string]map[string]bool),
 		ACLMutex:      sync.RWMutex{},
 	}
+
+	// 初始化数据库
+	db, err := sql.Open("sqlite3", "message.db")
+	if err != nil {
+		fmt.Printf("打开数据库失败: %v\n", err)
+		node.DB = nil
+		return node
+	}
+	node.DB = db
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			sender TEXT NOT NULL,
+			recipient TEXT,
+			content BLOB NOT NULL,
+			nonce BLOB,
+			is_private BOOLEAN DEFAULT FALSE,
+			is_own BOOLEAN DEFAULT FALSE
+		);
+		CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);
+		CREATE INDEX IF NOT EXISTS idx_chat ON messages(recipient, is_private);
+	`)
+	if err != nil {
+		fmt.Printf("创建数据库表失败: %v\n", err)
+		db.Close()
+		node.DB = nil
+		return node
+	}
+
+	// 清理旧消息（保留30天）
+	_, err = db.Exec("DELETE FROM messages WHERE timestamp < DATETIME('now', '-30 days')")
+	if err != nil {
+		fmt.Printf("清理旧消息失败: %v\n", err)
+	}
+
+	// Now load history with proper key
+	node.loadHistoryFromDB()
+
+	// 设置 WAL 模式以提高并发
+	_, err = db.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		fmt.Printf("设置 WAL 模式失败: %v\n", err)
+	}
+	_, err = db.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
+		fmt.Printf("设置 WAL 模式失败: %v\n", err)
+	}
+
+	return node
 }
 
 // ACL 方法实现
@@ -176,6 +228,7 @@ func (node *P2PNode) showCommandHelp() {
 	fmt.Println("  /block <用户名> - 屏蔽用户")
 	fmt.Println("  /unblock <用户名> - 解除屏蔽")
 	fmt.Println("  /acl - 查看屏蔽列表")
+	fmt.Println("  /history [用户名] [数量] - 查看历史消息 (默认20条)")
 	fmt.Println("  /help - 显示帮助信息")
 	fmt.Println("  /quit - 退出程序")
 	fmt.Println("===========================================")
@@ -444,6 +497,93 @@ func (node *P2PNode) handleCommand(command string) {
 	case "/help":
 		node.showCommandHelp()
 		
+	case "/history":
+		chatId := "all"
+		limit := 20
+		if len(parts) > 1 {
+			chatId = parts[1]
+		}
+		if len(parts) > 2 {
+			if l, err := strconv.Atoi(parts[2]); err == nil && l > 0 {
+				limit = l
+			}
+		}
+
+		if node.DB == nil {
+			fmt.Println("数据库未初始化")
+			return
+		}
+
+		var rows *sql.Rows
+		var err error
+
+		if chatId == "all" {
+			rows, err = node.DB.Query(`
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
+				FROM messages 
+				WHERE recipient = 'all' AND is_private = FALSE 
+				ORDER BY timestamp DESC 
+				LIMIT ?
+			`, limit)
+		} else {
+			rows, err = node.DB.Query(`
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
+				FROM messages 
+				WHERE is_private = TRUE AND (
+					(sender = ? AND recipient = ?) OR 
+					(sender = ? AND recipient = ?)
+				) 
+				ORDER BY timestamp DESC 
+				LIMIT ?
+			`, node.Name, chatId, chatId, node.Name, limit)
+		}
+
+		if err != nil {
+			fmt.Printf("查询历史消息失败: %v\n", err)
+			return
+		}
+		defer rows.Close()
+
+		fmt.Printf("历史消息 (%s, 最近 %d 条):\n", chatId, limit)
+		count := 0
+		for rows.Next() {
+			var sender, recipient string
+			var content, nonce []byte
+			var isPrivate, isOwn bool
+			var timestamp time.Time
+
+			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &timestamp)
+			if err != nil {
+				continue
+			}
+
+			// 解密
+			plaintext, err := decryptMessage(node.LocalDBKey, content, nonce)
+			if err != nil {
+				fmt.Printf("解密消息失败: %v\n", err)
+				continue
+			}
+
+			displayContent := string(plaintext)
+			if strings.HasPrefix(displayContent, "emoji:") {
+				displayContent = "[表情]"
+			}
+
+			prefix := ""
+			if isPrivate {
+				prefix = "(私聊) "
+			}
+			if isOwn {
+				fmt.Printf("[%s] 我 %s%s: %s\n", timestamp.Format("15:04:05"), prefix, recipient, displayContent)
+			} else {
+				fmt.Printf("[%s] %s %s: %s\n", timestamp.Format("15:04:05"), sender, prefix, displayContent)
+			}
+			count++
+		}
+		if count == 0 {
+			fmt.Println("无历史消息")
+		}
+		
 	default:
 		fmt.Printf("未知命令: %s\n", parts[0])
 	}
@@ -468,7 +608,64 @@ func (node *P2PNode) Stop() {
 	node.PeersMutex.Unlock()
 	
 	close(node.MessageChan)
+	if node.DB != nil {
+		node.DB.Close()
+	}
 	fmt.Println("P2P节点已停止")
+}
+
+func (node *P2PNode) loadHistoryFromDB() {
+	if node.DB == nil {
+		return
+	}
+
+	rows, err := node.DB.Query(`
+		SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
+		FROM messages 
+		ORDER BY timestamp DESC 
+		LIMIT 20
+	`)
+	if err != nil {
+		fmt.Printf("加载历史消息失败: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	var dbMsgs []ChatMessage
+	for rows.Next() {
+		var sender, recipient string
+		var content, nonce []byte
+		var isPrivate, isOwn bool
+		var ts time.Time
+		if err := rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &ts); err != nil {
+			continue
+		}
+
+		plaintext, err := decryptMessage(node.LocalDBKey, content, nonce)
+		if err != nil {
+			fmt.Printf("解密历史消息失败: %v\n", err)
+			continue
+		}
+
+		cm := ChatMessage{
+			Sender:    sender,
+			Recipient: recipient,
+			Content:   string(plaintext),
+			Timestamp: ts,
+			IsOwn:     isOwn,
+			IsPrivate: isPrivate,
+		}
+		dbMsgs = append(dbMsgs, cm)
+	}
+
+	// Reverse to get oldest first (ASC)
+	for i, j := 0, len(dbMsgs)-1; i < j; i, j = i+1, j-1 {
+		dbMsgs[i], dbMsgs[j] = dbMsgs[j], dbMsgs[i]
+	}
+
+	node.MessagesMutex.Lock()
+	node.Messages = dbMsgs
+	node.MessagesMutex.Unlock()
 }
 
 func main() {

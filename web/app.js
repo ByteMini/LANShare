@@ -34,6 +34,7 @@ async function init() {
     // 初始加载数据
     await loadBlockedUsers();
     loadUsers();
+    loadHistory(); // 加载历史消息
     loadMessages();
     loadFileTransfers();
     
@@ -50,6 +51,7 @@ async function init() {
     initFileTransfer();
     initChatSwitching();
     initEmojiPicker();
+    initHistoryLoading();
     
     console.log('LANShare P2P Web客户端已初始化');
 }
@@ -142,6 +144,69 @@ function loadMessages() {
             }
         })
         .catch(error => console.error('加载消息失败:', error));
+}
+
+let historyOffset = 0;
+const HISTORY_LIMIT = 50;
+
+function loadHistory() {
+    const url = new URL('/loadhistory', window.location.origin);
+    url.searchParams.append('chatId', currentChat.id);
+    url.searchParams.append('limit', HISTORY_LIMIT);
+    url.searchParams.append('offset', historyOffset);
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.messages && data.messages.length > 0) {
+                // 历史消息按时间升序，已处理
+                allMessages = data.messages.concat(allMessages);
+                historyOffset += data.messages.length;
+                displayMessages();
+            }
+        })
+        .catch(error => console.error('加载历史消息失败:', error));
+}
+
+function initHistoryLoading() {
+    // 添加加载更多按钮
+    const messagesDiv = document.getElementById('messages');
+    const loadMoreBtn = document.createElement('button');
+    loadMoreBtn.id = 'loadMoreHistory';
+    loadMoreBtn.textContent = '加载更多历史消息';
+    loadMoreBtn.style.display = 'none';
+    loadMoreBtn.onclick = () => {
+        loadHistory();
+    };
+    messagesDiv.parentNode.insertBefore(loadMoreBtn, messagesDiv);
+
+    // 监听滚动，如果滚动到顶部，加载更多
+    messagesDiv.addEventListener('scroll', () => {
+        if (messagesDiv.scrollTop === 0 && loadMoreBtn.style.display !== 'none') {
+            loadHistory();
+        }
+    });
+
+    // 更新按钮显示
+    function updateLoadMoreButton() {
+        if (historyOffset > 0) {
+            loadMoreBtn.style.display = 'block';
+        } else {
+            loadMoreBtn.style.display = 'none';
+        }
+    }
+
+    // 在 switchChat 时重置
+    const originalSwitchChat = switchChat;
+    switchChat = function(targetElement) {
+        originalSwitchChat.call(this, targetElement);
+        historyOffset = 0;
+        allMessages = []; // 清空当前聊天消息
+        loadHistory(); // 加载新聊天的历史
+        updateLoadMoreButton();
+    };
+
+    updateLoadMoreButton();
 }
 
 function displayMessages() {

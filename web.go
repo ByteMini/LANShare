@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -76,6 +78,116 @@ func (node *P2PNode) startWebGUI() {
 		// 直接转发文件内容
 		w.Header().Set("Content-Type", "application/json")
 		io.Copy(w, data)
+	})
+
+	// 加载历史消息处理器 (for web frontend)
+	mux.HandleFunc("/loadhistory", func(w http.ResponseWriter, r *http.Request) {
+		if node.DB == nil {
+			http.Error(w, "Database not available", http.StatusInternalServerError)
+			return
+		}
+
+		chatId := r.URL.Query().Get("chatId")
+		if chatId == "" {
+			chatId = "all"
+		}
+		limitStr := r.URL.Query().Get("limit")
+		limit := 20
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+		offsetStr := r.URL.Query().Get("offset")
+		offset := 0
+		if o, err := strconv.Atoi(offsetStr); err == nil {
+			offset = o
+		}
+
+		var rows *sql.Rows
+		var err error
+		var query string
+		var args []interface{}
+
+		if chatId == "all" {
+			query = `
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
+				FROM messages 
+				WHERE recipient = 'all' AND is_private = FALSE 
+				ORDER BY timestamp ASC 
+				LIMIT ? OFFSET ?
+			`
+			args = []interface{}{limit, offset}
+		} else {
+			query = `
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
+				FROM messages 
+				WHERE is_private = TRUE AND (
+					(sender = ? AND recipient = ?) OR 
+					(sender = ? AND recipient = ?)
+				) 
+				ORDER BY timestamp ASC 
+				LIMIT ? OFFSET ?
+			`
+			args = []interface{}{node.Name, chatId, chatId, node.Name, limit, offset}
+		}
+
+		rows, err = node.DB.Query(query, args...)
+		if err != nil {
+			http.Error(w, "Query failed", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type HistoryMsg struct {
+			ChatMessage
+			SenderName string `json:"senderName"`
+		}
+
+		var history []HistoryMsg
+		for rows.Next() {
+			var sender, recipient string
+			var content, nonce []byte
+			var isPrivate, isOwn bool
+			var tsStr string
+
+			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &tsStr)
+			if err != nil {
+				continue
+			}
+
+			plaintext, err := decryptMessage(node.LocalDBKey, content, nonce)
+			if err != nil {
+				fmt.Printf("解密历史消息失败: %v\n", err)
+				continue
+			}
+
+			ts, err := time.Parse("2006-01-02 15:04:05", tsStr)
+			if err != nil {
+				ts = time.Now()
+			}
+
+			senderName := sender
+			if sender == node.Name {
+				senderName = "我"
+			}
+
+			hm := HistoryMsg{
+				ChatMessage: ChatMessage{
+					Sender:    sender,
+					Recipient: recipient,
+					Content:   string(plaintext),
+					Timestamp: ts,
+					IsOwn:     isOwn,
+					IsPrivate: isPrivate,
+				},
+				SenderName: senderName,
+			}
+			history = append(history, hm)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"messages": history,
+		})
 	})
 
 
@@ -369,7 +481,7 @@ func (node *P2PNode) handleWebMessage(text string) {
 	}
 }
 
-	// 添加聊天消息
+// 添加聊天消息
 func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, isPrivate bool) {
 	if node.WebEnabled {
 		node.MessagesMutex.Lock()
@@ -389,6 +501,20 @@ func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, is
 		// 保持最近100条消息
 		if len(node.Messages) > 100 {
 			node.Messages = node.Messages[1:]
+		}
+	}
+
+	// 保存到数据库
+	if node.DB != nil {
+		ciphertext, nonce, err := encryptMessage(node.LocalDBKey, []byte(content))
+		if err != nil {
+			fmt.Printf("加密消息失败: %v\n", err)
+		} else {
+			_, err = node.DB.Exec("INSERT INTO messages (sender, recipient, content, nonce, is_private, is_own) VALUES (?, ?, ?, ?, ?, ?)",
+				sender, recipient, ciphertext, nonce, isPrivate, isOwn)
+			if err != nil {
+				fmt.Printf("保存消息到数据库失败: %v\n", err)
+			}
 		}
 	}
 

@@ -25,6 +25,7 @@ Thumbs.db
 
 # 日志文件
 *.log
+*.db
 
 # 临时文件
 *.tmp
