@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -12,6 +14,15 @@ import (
 	"sync"
 	"time"
 )
+
+// 生成消息ID
+func generateMessageID() string {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
+}
 
 // 创建新的P2P节点
 func NewP2PNode(name string, webEnabled bool, localIP string) *P2PNode {
@@ -57,10 +68,22 @@ func NewP2PNode(name string, webEnabled bool, localIP string) *P2PNode {
 			content BLOB NOT NULL,
 			nonce BLOB,
 			is_private BOOLEAN DEFAULT FALSE,
-			is_own BOOLEAN DEFAULT FALSE
+			is_own BOOLEAN DEFAULT FALSE,
+			message_type TEXT DEFAULT 'text',
+			message_id TEXT,
+			reply_to_id TEXT,
+			reply_to_content TEXT,
+			reply_to_sender TEXT,
+			file_name TEXT,
+			file_size INTEGER DEFAULT 0,
+			file_type TEXT,
+			file_url TEXT,
+			file_data TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);
 		CREATE INDEX IF NOT EXISTS idx_chat ON messages(recipient, is_private);
+		CREATE INDEX IF NOT EXISTS idx_message_type ON messages(message_type);
+		CREATE INDEX IF NOT EXISTS idx_message_id ON messages(message_id);
 	`)
 	if err != nil {
 		fmt.Printf("创建数据库表失败: %v\n", err)
@@ -305,12 +328,14 @@ func (node *P2PNode) handleCommand(command string) {
 		node.PeersMutex.RUnlock()
 		
 		if targetID == "" {
-			fmt.Printf("用户 %s 不在线\n", targetName)
+			fmt.Printf("错误: 用户 '%s' 不在线或不存在\n", targetName)
+			fmt.Println("提示: 使用 /list 命令查看在线用户")
 			return
 		}
-		
+
 		if node.isBlocked(targetAddress) {
-			fmt.Printf("用户 %s 被屏蔽，无法发送私聊\n", targetName)
+			fmt.Printf("错误: 用户 '%s' 被屏蔽，无法发送私聊\n", targetName)
+			fmt.Println("提示: 使用 /unblock 命令解除屏蔽")
 			return
 		}
 		
@@ -459,12 +484,14 @@ func (node *P2PNode) handleCommand(command string) {
 		node.PeersMutex.RUnlock()
 		
 		if targetID == "" {
-			fmt.Printf("用户 %s 不在线\n", targetName)
+			fmt.Printf("错误: 用户 '%s' 不在线或不存在\n", targetName)
+			fmt.Println("提示: 使用 /list 命令查看在线用户")
 			return
 		}
-		
+
 		if node.isBlocked(targetAddress) {
-			fmt.Printf("用户 %s 被屏蔽，无法发送文件\n", targetName)
+			fmt.Printf("错误: 用户 '%s' 被屏蔽，无法发送文件\n", targetName)
+			fmt.Println("提示: 使用 /unblock 命令解除屏蔽")
 			return
 		}
 		node.sendFileTransferRequest(filePath, targetName)
@@ -519,21 +546,25 @@ func (node *P2PNode) handleCommand(command string) {
 
 		if chatId == "all" {
 			rows, err = node.DB.Query(`
-				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
-				FROM messages 
-				WHERE recipient = 'all' AND is_private = FALSE 
-				ORDER BY timestamp DESC 
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp,
+					   message_type, message_id, reply_to_id, reply_to_content, reply_to_sender,
+					   file_name, file_size, file_type
+				FROM messages
+				WHERE recipient = 'all' AND is_private = FALSE
+				ORDER BY timestamp DESC
 				LIMIT ?
 			`, limit)
 		} else {
 			rows, err = node.DB.Query(`
-				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
-				FROM messages 
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp,
+					   message_type, message_id, reply_to_id, reply_to_content, reply_to_sender,
+					   file_name, file_size, file_type
+				FROM messages
 				WHERE is_private = TRUE AND (
-					(sender = ? AND recipient = ?) OR 
+					(sender = ? AND recipient = ?) OR
 					(sender = ? AND recipient = ?)
-				) 
-				ORDER BY timestamp DESC 
+				)
+				ORDER BY timestamp DESC
 				LIMIT ?
 			`, node.Name, chatId, chatId, node.Name, limit)
 		}
@@ -551,8 +582,12 @@ func (node *P2PNode) handleCommand(command string) {
 			var content, nonce []byte
 			var isPrivate, isOwn bool
 			var timestamp time.Time
+			var messageType, messageID, replyToID, replyToContent, replyToSender, fileName, fileType string
+			var fileSize int64
 
-			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &timestamp)
+			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &timestamp,
+				&messageType, &messageID, &replyToID, &replyToContent, &replyToSender,
+				&fileName, &fileSize, &fileType)
 			if err != nil {
 				continue
 			}
@@ -567,6 +602,12 @@ func (node *P2PNode) handleCommand(command string) {
 			displayContent := string(plaintext)
 			if strings.HasPrefix(displayContent, "emoji:") {
 				displayContent = "[表情]"
+			} else if messageType == "image" && fileName != "" {
+				displayContent = fmt.Sprintf("[图片: %s]", fileName)
+			} else if messageType == "file" && fileName != "" {
+				displayContent = fmt.Sprintf("[文件: %s (%s)]", fileName, formatFileSize(fileSize))
+			} else if messageType == "reply" && replyToSender != "" {
+				displayContent = fmt.Sprintf("[回复 %s]: %s", replyToSender, displayContent)
 			}
 
 			prefix := ""
@@ -589,24 +630,55 @@ func (node *P2PNode) handleCommand(command string) {
 	}
 }
 
+// 清理内存 - 移除旧的完成/失败传输
+func (node *P2PNode) cleanupMemory() {
+	now := time.Now()
+
+	// 每5分钟清理一次
+	if now.Sub(node.lastCleanupTime) < 5*time.Minute {
+		return
+	}
+	node.lastCleanupTime = now
+
+	node.FileTransfersMutex.Lock()
+	defer node.FileTransfersMutex.Unlock()
+
+	// 清理完成或失败超过10分钟的传输
+	var toDelete []string
+	for id, transfer := range node.FileTransfers {
+		if (transfer.Status == "completed" || transfer.Status == "failed") &&
+		   now.Sub(transfer.EndTime) > 10*time.Minute {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	for _, id := range toDelete {
+		delete(node.FileTransfers, id)
+	}
+
+	if len(toDelete) > 0 {
+		fmt.Printf("已清理 %d 个旧文件传输记录\n", len(toDelete))
+	}
+}
+
 // 停止节点
 func (node *P2PNode) Stop() {
 	node.Running = false
-	
+
 	if node.Listener != nil {
 		node.Listener.Close()
 	}
-	
+
 	if node.BroadcastConn != nil {
 		node.BroadcastConn.Close()
 	}
-	
+
 	node.PeersMutex.Lock()
 	for _, peer := range node.Peers {
 		peer.Conn.Close()
 	}
 	node.PeersMutex.Unlock()
-	
+
 	close(node.MessageChan)
 	if node.DB != nil {
 		node.DB.Close()
@@ -620,9 +692,11 @@ func (node *P2PNode) loadHistoryFromDB() {
 	}
 
 	rows, err := node.DB.Query(`
-		SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
-		FROM messages 
-		ORDER BY timestamp DESC 
+		SELECT sender, recipient, content, nonce, is_private, is_own, timestamp,
+			   message_type, message_id, reply_to_id, reply_to_content, reply_to_sender,
+			   file_name, file_size, file_type, file_url, file_data
+		FROM messages
+		ORDER BY timestamp DESC
 		LIMIT 20
 	`)
 	if err != nil {
@@ -637,7 +711,14 @@ func (node *P2PNode) loadHistoryFromDB() {
 		var content, nonce []byte
 		var isPrivate, isOwn bool
 		var ts time.Time
-		if err := rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &ts); err != nil {
+		var messageType, messageID, replyToID, replyToContent, replyToSender, fileName, fileType string
+		var fileSize int64
+
+		var fileURL string
+		var fileData string
+		if err := rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &ts,
+			&messageType, &messageID, &replyToID, &replyToContent, &replyToSender,
+			&fileName, &fileSize, &fileType, &fileURL, &fileData); err != nil {
 			continue
 		}
 
@@ -648,12 +729,21 @@ func (node *P2PNode) loadHistoryFromDB() {
 		}
 
 		cm := ChatMessage{
-			Sender:    sender,
-			Recipient: recipient,
-			Content:   string(plaintext),
-			Timestamp: ts,
-			IsOwn:     isOwn,
-			IsPrivate: isPrivate,
+			Sender:        sender,
+			Recipient:     recipient,
+			Content:       string(plaintext),
+			Timestamp:     ts,
+			IsOwn:         isOwn,
+			IsPrivate:     isPrivate,
+			MessageType:   messageType,
+			MessageID:     messageID,
+			ReplyToID:     replyToID,
+			ReplyToContent: replyToContent,
+			ReplyToSender: replyToSender,
+			FileName:      fileName,
+			FileSize:      fileSize,
+			FileType:      fileType,
+			FileURL:       fileURL,
 		}
 		dbMsgs = append(dbMsgs, cm)
 	}

@@ -4,10 +4,13 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 	"golang.org/x/crypto/curve25519"
@@ -65,7 +68,7 @@ func decryptMessage(key [32]byte, ciphertext []byte, nonce []byte) ([]byte, erro
 	return aesGCM.Open(nil, nonce, ciphertext, nil)
 }
 
-// 连接到对等节点
+// 连接到对等节点（带重试机制）
 func (node *P2PNode) connectToPeer(ip string, port int, id, name string) {
 	node.PeersMutex.RLock()
 	if _, exists := node.Peers[id]; exists {
@@ -79,46 +82,63 @@ func (node *P2PNode) connectToPeer(ip string, port int, id, name string) {
 	}
 
 	address := fmt.Sprintf("%s:%d", ip, port)
-	conn, err := net.Dial("tcp", address)
-	if err != nil {
+	maxRetries := 3
+	baseDelay := 1 * time.Second
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		conn, err := net.Dial("tcp", address)
+		if err != nil {
+			if attempt < maxRetries-1 {
+				delay := time.Duration(attempt+1) * baseDelay
+				fmt.Printf("连接到 %s (%s) 失败，重试 %d/%d，等待 %v: %v\n",
+					name, address, attempt+1, maxRetries, delay, err)
+				time.Sleep(delay)
+				continue
+			} else {
+				fmt.Printf("连接到 %s (%s) 失败，已达到最大重试次数: %v\n", name, address, err)
+				return
+			}
+		}
+
+		peer := &Peer{
+			ID:       id,
+			Name:     name,
+			Address:  address,
+			Conn:     conn,
+			IsActive: true,
+			LastSeen: time.Now(),
+			IP:       ip,
+			Port:     port,
+		}
+
+		node.PeersMutex.Lock()
+		node.Peers[id] = peer
+		node.PeersMutex.Unlock()
+
+		fmt.Printf("成功连接到节点: %s (%s)\n", name, address)
+
+		// 生成密钥对
+		privateKey, publicKey, err := generateECDHKeyPair()
+		if err != nil {
+			fmt.Printf("密钥生成失败: %v\n", err)
+			conn.Close()
+			return
+		}
+		peer.PrivateKey = privateKey
+		peer.PublicKey = publicKey
+
+		handshakeMsg := Message{
+			Type:        "handshake",
+			From:        node.ID,
+			Content:     node.Name,
+			Timestamp:   time.Now(),
+			SenderPubKey: publicKey[:],
+		}
+		node.sendMessageToPeer(peer, handshakeMsg)
+
+		go node.handlePeerConnection(peer)
 		return
 	}
-
-	peer := &Peer{
-		ID:       id,
-		Name:     name,
-		Address:  address,
-		Conn:     conn,
-		IsActive: true,
-		LastSeen: time.Now(),
-	}
-
-	node.PeersMutex.Lock()
-	node.Peers[id] = peer
-	node.PeersMutex.Unlock()
-
-	fmt.Printf("成功连接到节点: %s (%s)\n", name, address)
-
-	// 生成密钥对
-	privateKey, publicKey, err := generateECDHKeyPair()
-	if err != nil {
-		fmt.Printf("密钥生成失败: %v\n", err)
-		conn.Close()
-		return
-	}
-	peer.PrivateKey = privateKey
-	peer.PublicKey = publicKey
-
-	handshakeMsg := Message{
-		Type:        "handshake",
-		From:        node.ID,
-		Content:     node.Name,
-		Timestamp:   time.Now(),
-		SenderPubKey: publicKey[:],
-	}
-	node.sendMessageToPeer(peer, handshakeMsg)
-
-	go node.handlePeerConnection(peer)
 }
 
 // 接受连接
@@ -183,6 +203,13 @@ func (node *P2PNode) handleIncomingConnection(conn net.Conn) {
 	peer.Address = conn.RemoteAddr().String()
 	peer.IsActive = true
 	peer.LastSeen = time.Now()
+	peer.ReconnectAttempts = 0
+
+	// 解析IP和端口
+	if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		peer.IP = addr.IP.String()
+		peer.Port = addr.Port
+	}
 
 	node.PeersMutex.Lock()
 	node.Peers[peer.ID] = peer
@@ -203,35 +230,125 @@ func (node *P2PNode) handleIncomingConnection(conn net.Conn) {
 	go node.handlePeerConnection(peer)
 }
 
-// 处理对等节点连接
+// 处理对等节点连接（带重连机制）
 func (node *P2PNode) handlePeerConnection(peer *Peer) {
-	decoder := json.NewDecoder(peer.Conn)
-	
-	for {
-		var msg Message
-		if err := decoder.Decode(&msg); err != nil {
-			if err != io.EOF {
-				fmt.Printf("从节点 %s 读取消息失败: %v\n", peer.Name, err)
+	defer func() {
+		peer.Conn.Close()
+	}()
+
+	for node.Running {
+		decoder := json.NewDecoder(peer.Conn)
+
+		// 读取消息循环
+		for node.Running {
+			var msg Message
+			if err := decoder.Decode(&msg); err != nil {
+				if err != io.EOF && err.Error() != "use of closed network connection" {
+					fmt.Printf("从节点 %s 读取消息失败: %v\n", peer.Name, err)
+				}
+				break
 			}
+
+			peer.LastSeen = time.Now()
+			peer.ReconnectAttempts = 0 // 重置重连计数
+			node.MessageChan <- msg
+		}
+
+		// 连接断开，尝试重连
+		if !node.Running {
 			break
 		}
 
-		peer.LastSeen = time.Now()
-		node.MessageChan <- msg
+		peer.IsActive = false
+		fmt.Printf("节点 %s 断开连接，尝试重连...\n", peer.Name)
+
+		// 指数退避重连策略
+		maxReconnectAttempts := 5
+		baseDelay := 2 * time.Second
+
+		for attempt := 0; attempt < maxReconnectAttempts && node.Running; attempt++ {
+			peer.ReconnectAttempts = attempt + 1
+			peer.LastReconnectTime = time.Now()
+
+			delay := time.Duration(1<<uint(attempt)) * baseDelay // 指数退避
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+
+			fmt.Printf("尝试重连到 %s (%s)，第 %d/%d 次，等待 %v\n",
+				peer.Name, peer.Address, attempt+1, maxReconnectAttempts, delay)
+
+			time.Sleep(delay)
+
+			conn, err := net.Dial("tcp", peer.Address)
+			if err != nil {
+				fmt.Printf("重连到 %s 失败: %v\n", peer.Name, err)
+				continue
+			}
+
+			// 重连成功
+			peer.Conn = conn
+			peer.IsActive = true
+			peer.LastSeen = time.Now()
+
+			fmt.Printf("成功重连到节点: %s (%s)\n", peer.Name, peer.Address)
+
+			// 重新进行握手
+			privateKey, publicKey, err := generateECDHKeyPair()
+			if err != nil {
+				fmt.Printf("重连时密钥生成失败: %v\n", err)
+				conn.Close()
+				break
+			}
+			peer.PrivateKey = privateKey
+			peer.PublicKey = publicKey
+
+			handshakeMsg := Message{
+				Type:        "handshake",
+				From:        node.ID,
+				Content:     node.Name,
+				Timestamp:   time.Now(),
+				SenderPubKey: publicKey[:],
+			}
+
+			if err := node.sendMessageToPeer(peer, handshakeMsg); err != nil {
+				fmt.Printf("重连握手失败: %v\n", err)
+				conn.Close()
+				continue
+			}
+
+			// 重新开始消息处理循环
+			break
+		}
+
+		if !peer.IsActive {
+			fmt.Printf("重连到 %s 失败，已达到最大重试次数\n", peer.Name)
+			break
+		}
 	}
 
-	node.PeersMutex.Lock()
-	delete(node.Peers, peer.ID)
-	node.PeersMutex.Unlock()
-	
-	peer.Conn.Close()
-	fmt.Printf("节点 %s 断开连接\n", peer.Name)
+	// 清理：只有在节点停止运行或重连完全失败时才删除peer
+	if !node.Running || !peer.IsActive {
+		node.PeersMutex.Lock()
+		delete(node.Peers, peer.ID)
+		node.PeersMutex.Unlock()
+		fmt.Printf("节点 %s 连接已终止\n", peer.Name)
+	}
 }
 
 // 处理消息
 func (node *P2PNode) handleMessages() {
-	for msg := range node.MessageChan {
-		switch msg.Type {
+	cleanupTicker := time.NewTicker(5 * time.Minute)
+	defer cleanupTicker.Stop()
+
+	for {
+		select {
+		case msg, ok := <-node.MessageChan:
+			if !ok {
+				return // 通道已关闭
+			}
+
+			switch msg.Type {
 		case "chat":
 			// 解密聊天消息
 			var content string
@@ -265,13 +382,19 @@ func (node *P2PNode) handleMessages() {
 				if node.isBlocked(senderPeer.Address) {
 					continue
 				}
-				node.addChatMessage(senderName, "all", content, false, false)
+				fileURL := node.processReceivedFile(msg)
+				node.addChatMessageWithType(senderName, "all", content, false, false,
+					msg.MessageType, msg.MessageID, msg.ReplyToID, msg.ReplyToContent, msg.ReplyToSender,
+					msg.FileName, msg.FileSize, msg.FileType, fileURL)
 			} else if msg.To == node.ID {
 				// 私聊消息
 				if node.isBlocked(senderPeer.Address) {
 					continue
 				}
-				node.addChatMessage(senderName, node.Name, content, false, true)
+				fileURL := node.processReceivedFile(msg)
+				node.addChatMessageWithType(senderName, node.Name, content, false, true,
+					msg.MessageType, msg.MessageID, msg.ReplyToID, msg.ReplyToContent, msg.ReplyToSender,
+					msg.FileName, msg.FileSize, msg.FileType, fileURL)
 			}
 		case "handshake":
 			// 握手消息已在连接处理中处理
@@ -325,6 +448,9 @@ func (node *P2PNode) handleMessages() {
 				fmt.Printf("用户 %s 已更名为 %s\n", oldName, peer.Name)
 			}
 			node.PeersMutex.Unlock()
+			}
+		case <-cleanupTicker.C:
+			node.cleanupMemory()
 		}
 	}
 }
@@ -431,4 +557,42 @@ func getLocalIP() string {
 	selectedName := interfaceNames[choice-1]
 	fmt.Printf("使用网络接口: %s (%s)\n", selectedName, selectedIP)
 	return selectedIP
+}
+
+// 处理接收到的文件数据
+func (node *P2PNode) processReceivedFile(msg Message) string {
+	if msg.MessageType == MessageTypeImage && msg.FileData != "" {
+		// 对于图片消息，解码base64数据并保存到本地
+		imageData, err := base64.StdEncoding.DecodeString(msg.FileData)
+		if err != nil {
+			fmt.Printf("解码图片数据失败: %v\n", err)
+			return ""
+		}
+
+		// 创建images目录
+		imageDir := "images"
+		if err := os.MkdirAll(imageDir, 0755); err != nil {
+			fmt.Printf("创建图片目录失败: %v\n", err)
+			return ""
+		}
+
+		// 生成唯一文件名
+		ext := filepath.Ext(msg.FileName)
+		if ext == "" {
+			ext = ".jpg" // 默认扩展名
+		}
+		imageFileName := fmt.Sprintf("%s_%d%s", generateMessageID(), time.Now().Unix(), ext)
+		imagePath := filepath.Join(imageDir, imageFileName)
+
+		// 保存图片文件
+		if err := os.WriteFile(imagePath, imageData, 0644); err != nil {
+			fmt.Printf("保存接收到的图片失败: %v\n", err)
+			return ""
+		}
+
+		return fmt.Sprintf("/images/%s", imageFileName)
+	}
+
+	// 对于其他类型的文件，返回空字符串（暂时不支持）
+	return ""
 }

@@ -7,7 +7,10 @@ let localUsername = '';
 let currentChat = { id: 'all', name: '公聊' };
 let allMessages = [];
 let shownPendingTransfers = new Set();
+let shownFailedTransfers = new Set();
+let shownCompletedTransfers = new Set();
 let blockedUsers = new Set();
+let replyingToMessage = null; // 当前正在回复的消息
 
 // =================================
 async function loadBlockedUsers() {
@@ -245,38 +248,116 @@ function displayMessages() {
 function createMessageElement(msg) {
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message ' + (msg.isOwn ? 'own' : 'other') + (msg.isPrivate ? ' private' : '');
+    messageDiv.dataset.messageId = msg.messageId || '';
+
+    // 添加回复指示器
+    if (msg.messageType === 'reply' && msg.replyToSender && msg.replyToContent) {
+        const replyIndicator = document.createElement('div');
+        replyIndicator.className = 'reply-indicator-inline';
+        replyIndicator.innerHTML = `
+            <div class="reply-line"></div>
+            <div class="reply-content">
+                <strong>${msg.replyToSender}:</strong> ${msg.replyToContent.substring(0, 100)}${msg.replyToContent.length > 100 ? '...' : ''}
+            </div>
+        `;
+        messageDiv.appendChild(replyIndicator);
+    }
 
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
 
-    if (msg.content.startsWith('emoji:')) {
+    // 根据消息类型显示不同内容
+    if (msg.messageType === 'image' && (msg.fileUrl || msg.fileName)) {
+        // 图片消息
+        const imageContainer = document.createElement('div');
+        imageContainer.className = 'image-message';
+        const imageUrl = msg.fileUrl || `/images/${msg.fileName}`;
+        imageContainer.innerHTML = `
+            <img src="${imageUrl}" alt="${msg.fileName}" class="message-image" onclick="openImageModal(this.src)">
+            <div class="image-caption">${msg.content}</div>
+        `;
+        contentDiv.appendChild(imageContainer);
+    } else if (msg.messageType === 'file' && msg.fileName) {
+        // 文件消息
+        const fileContainer = document.createElement('div');
+        fileContainer.className = 'file-message';
+        const fileIcon = getFileIcon(msg.fileType || msg.fileName);
+        const fileSize = formatBytes(msg.fileSize || 0);
+        fileContainer.innerHTML = `
+            <div class="file-info">
+                <span class="file-icon">${fileIcon}</span>
+                <div class="file-details">
+                    <div class="file-name">${msg.fileName}</div>
+                    <div class="file-size">${fileSize}</div>
+                </div>
+            </div>
+            <div class="file-caption">${msg.content}</div>
+        `;
+        contentDiv.appendChild(fileContainer);
+    } else if (msg.content.startsWith('emoji:')) {
+        // 表情消息
         const emojiId = msg.content.split(':')[1];
         const emoji = allEmojis.find(e => e.id === emojiId);
         if (emoji) {
-            // Telegram风格的大表情显示
             const emojiContainer = document.createElement('div');
             emojiContainer.className = 'emoji-message';
-            
+
             if (emoji.type === 'gif') {
                 emojiContainer.innerHTML = `<img class="emoji-large-gif" src="/emoji-gifs/${emoji.filename}" alt="${emoji.name}">`;
             }
-            
+
             contentDiv.appendChild(emojiContainer);
         } else {
-            contentDiv.textContent = msg.content; // 如果找不到表情，则显示原始文本
+            contentDiv.textContent = msg.content;
         }
     } else {
+        // 普通文本消息
         contentDiv.textContent = msg.content;
     }
-    
+
     const timeDiv = document.createElement('div');
     timeDiv.className = 'message-time';
     timeDiv.textContent = formatTime(new Date(msg.timestamp));
-    
+
+    // 添加回复按钮（非自己的消息）
+    if (!msg.isOwn && msg.messageId) {
+        const replyBtn = document.createElement('button');
+        replyBtn.className = 'reply-btn';
+        replyBtn.textContent = '↩️';
+        replyBtn.title = '回复此消息';
+        replyBtn.onclick = () => replyToMessage(messageDiv);
+        timeDiv.appendChild(replyBtn);
+    }
+
     messageDiv.appendChild(contentDiv);
     messageDiv.appendChild(timeDiv);
-    
+
     return messageDiv;
+}
+
+function getFileIcon(fileType) {
+    if (fileType.startsWith('image/')) return '🖼️';
+    if (fileType.startsWith('video/')) return '🎥';
+    if (fileType.startsWith('audio/')) return '🎵';
+    if (fileType.includes('pdf')) return '📄';
+    if (fileType.includes('zip') || fileType.includes('rar')) return '📦';
+    if (fileType.includes('doc') || fileType.includes('txt')) return '📝';
+    return '📎';
+}
+
+function openImageModal(src) {
+    const modal = document.createElement('div');
+    modal.className = 'image-modal';
+    modal.innerHTML = `
+        <div class="image-modal-content">
+            <img src="${src}" class="modal-image">
+            <button class="close-modal" onclick="this.parentElement.parentElement.remove()">✕</button>
+        </div>
+    `;
+    modal.onclick = (e) => {
+        if (e.target === modal) modal.remove();
+    };
+    document.body.appendChild(modal);
 }
 
 // =================================
@@ -357,9 +438,11 @@ let selectedFile = null;
 
 function initFileTransfer() {
     const fileInput = document.getElementById('fileInput');
+    const imageInput = document.getElementById('imageInput');
     const fileControls = document.getElementById('file-transfer-controls');
     const fileNameDisplay = document.getElementById('fileNameDisplay');
 
+    // 文件选择处理
     fileInput.addEventListener('change', function(event) {
         if (event.target.files.length > 0) {
             selectedFile = event.target.files[0];
@@ -370,7 +453,15 @@ function initFileTransfer() {
         }
         updateSendFileButton();
     });
-    
+
+    // 图片选择处理
+    imageInput.addEventListener('change', function(event) {
+        if (event.target.files.length > 0) {
+            const imageFile = event.target.files[0];
+            sendImage(imageFile);
+        }
+    });
+
     document.getElementById('fileTargetUser').addEventListener('change', updateSendFileButton);
     updateUserSelect();
     setInterval(updateUserSelect, 5000);
@@ -443,15 +534,46 @@ function cancelFileSelection() {
 
 function loadFileTransfers() {
     fetch('/filetransfers')
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        })
         .then(data => {
-            const pendingReceive = (data.transfers || []).find(t => t.direction === 'receive' && t.status === 'pending');
+            const transfers = data.transfers || [];
+            displayFileTransfers(transfers);
+
+            // 处理待接收的文件确认对话框
+            const pendingReceive = transfers.find(t => t.direction === 'receive' && t.status === 'pending');
             if (pendingReceive && !shownPendingTransfers.has(pendingReceive.fileId)) {
                 showFileConfirmDialog(pendingReceive);
                 shownPendingTransfers.add(pendingReceive.fileId);
             }
+
+            // 检查是否有失败的传输并显示通知
+            const failedTransfers = transfers.filter(t => t.status === 'failed');
+            failedTransfers.forEach(transfer => {
+                if (!shownFailedTransfers.has(transfer.fileId)) {
+                    showNotification(`文件传输失败: ${transfer.fileName}`, 'error');
+                    shownFailedTransfers.add(transfer.fileId);
+                }
+            });
+
+            // 检查是否有完成的传输并显示通知
+            const completedTransfers = transfers.filter(t => t.status === 'completed');
+            completedTransfers.forEach(transfer => {
+                if (!shownCompletedTransfers.has(transfer.fileId)) {
+                    const directionText = transfer.direction === 'send' ? '发送' : '接收';
+                    showNotification(`文件${directionText}完成: ${transfer.fileName}`, 'success');
+                    shownCompletedTransfers.add(transfer.fileId);
+                }
+            });
         })
-        .catch(error => console.error('加载文件传输列表失败:', error));
+        .catch(error => {
+            console.error('加载文件传输列表失败:', error);
+            showNotification('无法加载文件传输状态，请检查连接', 'error');
+        });
 }
 
 function showFileConfirmDialog(transfer) {
@@ -499,6 +621,95 @@ function sendFileResponse(fileId, accepted) {
         showNotification(`文件传输已${accepted ? '接受' : '拒绝'}`, 'success');
     })
     .catch(error => showNotification('发送响应失败', 'error'));
+}
+
+function displayFileTransfers(transfers) {
+    const section = document.getElementById('fileTransfersSection');
+    const list = document.getElementById('fileTransfersList');
+
+    // 检查是否有活跃的传输（非完成状态）
+    const activeTransfers = transfers.filter(t => t.status !== 'completed' && t.status !== 'failed');
+
+    if (activeTransfers.length === 0) {
+        // 如果没有活跃传输，隐藏区域
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+    list.innerHTML = '';
+
+    transfers.forEach(transfer => {
+        const transferDiv = createFileTransferElement(transfer);
+        list.appendChild(transferDiv);
+    });
+}
+
+function createFileTransferElement(transfer) {
+    const div = document.createElement('div');
+    div.className = 'file-transfer-status';
+    div.dataset.fileId = transfer.fileId;
+
+    const progressPercent = transfer.fileSize > 0 ? (transfer.progress / transfer.fileSize * 100) : 0;
+    const progressText = `${formatBytes(transfer.progress)} / ${formatBytes(transfer.fileSize)}`;
+    const speedText = transfer.speed > 0 ? formatSpeed(transfer.speed) : '--';
+    const etaText = transfer.eta > 0 ? formatETA(transfer.eta) : '--';
+
+    const statusText = getStatusText(transfer.status);
+    const directionIcon = transfer.direction === 'send' ? '📤' : '📥';
+
+    div.innerHTML = `
+        <div class="file-name">${directionIcon} ${transfer.fileName}</div>
+        <div class="file-progress">
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${progressPercent}%"></div>
+            </div>
+            <div class="progress-text">${progressPercent.toFixed(1)}%</div>
+        </div>
+        <div class="file-details">
+            <div class="file-size">${progressText}</div>
+            <div class="file-speed">速度: ${speedText}</div>
+            <div class="file-eta">剩余: ${etaText}</div>
+            <div class="file-status">状态: ${statusText}</div>
+            <div class="file-peer">对方: ${transfer.peerName}</div>
+        </div>
+    `;
+
+    return div;
+}
+
+function formatSpeed(bytesPerSecond) {
+    if (bytesPerSecond < 1024) {
+        return `${bytesPerSecond.toFixed(0)} B/s`;
+    } else if (bytesPerSecond < 1024 * 1024) {
+        return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+    } else {
+        return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+    }
+}
+
+function formatETA(seconds) {
+    if (seconds < 60) {
+        return `${seconds}秒`;
+    } else if (seconds < 3600) {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${minutes}分${remainingSeconds}秒`;
+    } else {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        return `${hours}时${minutes}分`;
+    }
+}
+
+function getStatusText(status) {
+    switch (status) {
+        case 'pending': return '等待中';
+        case 'transferring': return '传输中';
+        case 'completed': return '已完成';
+        case 'failed': return '失败';
+        default: return status;
+    }
 }
 
 // =================================
@@ -660,13 +871,33 @@ function checkConnection() {
     fetch('/ping')
         .then(response => {
             if (!response.ok) {
-                throw new Error('服务器无响应');
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
             showConnectedState();
         })
-        .catch(() => {
+        .catch(error => {
+            console.error('连接检查失败:', error);
             showDisconnectedState();
         });
+}
+
+function showConnectedState() {
+    const statusIndicator = document.getElementById('statusIndicator');
+    if (!statusIndicator.classList.contains('online')) {
+        statusIndicator.textContent = '状态: 已连接';
+        statusIndicator.classList.remove('offline');
+        statusIndicator.classList.add('online');
+    }
+}
+
+function showDisconnectedState() {
+    const statusIndicator = document.getElementById('statusIndicator');
+    if (!statusIndicator.classList.contains('offline')) {
+        statusIndicator.textContent = '状态: 未连接';
+        statusIndicator.classList.add('offline');
+        statusIndicator.classList.remove('online');
+        showNotification('与服务器断开连接，正在尝试重连...', 'warning');
+    }
 }
 
 function showConnectedState() {
@@ -776,4 +1007,181 @@ function showEmojiAlert(message) {
     dialog.onclick = (e) => {
         if (e.target === dialog) hideDialog();
     };
+}
+
+// =================================
+// 图片消息功能
+// =================================
+function sendImage(imageFile) {
+    if (!imageFile) {
+        showNotification('请选择图片文件', 'error');
+        return;
+    }
+
+    // 对于公聊，直接使用'all'作为目标；对于私聊，使用当前聊天对象
+    const targetName = currentChat.id === 'all' ? 'all' : currentChat.name;
+
+    const formData = new FormData();
+    formData.append('image', imageFile);
+    formData.append('targetName', targetName);
+
+    fetch('/sendimage', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showNotification('图片发送成功', 'success');
+        } else {
+            throw new Error('发送失败');
+        }
+    })
+    .catch(error => {
+        console.error('发送图片失败:', error);
+        showNotification('发送图片失败，请重试', 'error');
+    });
+}
+
+function getFirstOnlineUser() {
+    // 获取第一个在线用户（除了自己）
+    const usersList = document.getElementById('usersList');
+    const userElements = usersList.querySelectorAll('li[data-chat-id]:not(.own)');
+    for (let userEl of userElements) {
+        const userName = userEl.dataset.chatId;
+        if (!blockedUsers.has(userName)) {
+            return userName;
+        }
+    }
+    return null;
+}
+
+// =================================
+// 消息回复功能
+// =================================
+function replyToMessage(messageElement) {
+    const messageId = messageElement.dataset.messageId;
+    const sender = messageElement.querySelector('.message-sender').textContent;
+    const content = messageElement.querySelector('.message-content').textContent;
+
+    replyingToMessage = {
+        id: messageId,
+        sender: sender,
+        content: content
+    };
+
+    const input = document.getElementById('messageInput');
+    input.placeholder = `回复 ${sender}: ${content.substring(0, 20)}...`;
+    input.focus();
+
+    // 添加回复UI提示
+    showReplyIndicator(sender, content);
+}
+
+function showReplyIndicator(sender, content) {
+    // 移除现有的回复指示器
+    const existingIndicator = document.querySelector('.reply-indicator');
+    if (existingIndicator) {
+        existingIndicator.remove();
+    }
+
+    const indicator = document.createElement('div');
+    indicator.className = 'reply-indicator';
+    indicator.innerHTML = `
+        <div class="reply-info">
+            <strong>回复 ${sender}:</strong> ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}
+            <button onclick="cancelReply()" class="cancel-reply-btn">✕</button>
+        </div>
+    `;
+
+    const inputArea = document.querySelector('.input-area');
+    inputArea.insertBefore(indicator, inputArea.firstChild);
+}
+
+function cancelReply() {
+    replyingToMessage = null;
+    const input = document.getElementById('messageInput');
+    input.placeholder = currentChat.id === 'all' ? '输入公共消息...' : `私聊 ${currentChat.name}...`;
+
+    const indicator = document.querySelector('.reply-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
+// 修改发送消息函数以支持回复
+function sendMessage() {
+    const input = document.getElementById('messageInput');
+    let message = input.value.trim();
+
+    if (message === '') {
+        input.style.animation = 'shake 0.3s ease-in-out';
+        setTimeout(() => { input.style.animation = ''; }, 300);
+        return;
+    }
+
+    // 如果是回复消息
+    if (replyingToMessage) {
+        sendReplyMessage(message);
+        return;
+    }
+
+    // 检查是否是私聊
+    if (currentChat.id !== 'all') {
+        if (blockedUsers.has(currentChat.name)) {
+            showNotification(`请先解除对${currentChat.name}的屏蔽`, 'warning');
+            return;
+        }
+        message = `/to ${currentChat.name} ${message}`;
+    }
+
+    fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message })
+    })
+    .then(response => {
+        if (response.ok) {
+            input.value = '';
+            cancelReply(); // 清除回复状态
+            input.focus();
+        } else {
+            throw new Error('发送失败');
+        }
+    })
+    .catch(error => {
+        console.error('发送消息失败:', error);
+        showNotification('发送消息失败，请重试', 'error');
+    });
+}
+
+function sendReplyMessage(replyContent) {
+    if (!replyingToMessage) return;
+
+    const targetName = currentChat.id === 'all' ? 'all' : currentChat.name;
+
+    fetch('/sendreply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            targetName: targetName,
+            replyContent: replyContent,
+            originalMsgId: replyingToMessage.id,
+            originalSender: replyingToMessage.sender,
+            originalContent: replyingToMessage.content
+        })
+    })
+    .then(response => {
+        if (response.ok) {
+            document.getElementById('messageInput').value = '';
+            cancelReply();
+            showNotification('回复发送成功', 'success');
+        } else {
+            throw new Error('发送失败');
+        }
+    })
+    .catch(error => {
+        console.error('发送回复失败:', error);
+        showNotification('发送回复失败，请重试', 'error');
+    });
 }

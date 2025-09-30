@@ -17,7 +17,7 @@ mkdir -p build
 
 # 清理旧的构建文件
 echo "正在清理旧的构建文件..."
-rm -f build/lanshare*
+rm -f build/*
 
 # 源文件列表
 SOURCE_FILES="main.go types.go network.go discovery.go web.go filetransfer.go"

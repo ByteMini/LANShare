@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -63,6 +64,11 @@ func (node *P2PNode) startWebGUI() {
 	emojiGifServer := http.FileServer(http.Dir("assets/emoji-gifs"))
 	mux.Handle("/emoji-gifs/", http.StripPrefix("/emoji-gifs/", emojiGifServer))
 
+	// 图片文件服务器
+	// 请求 /images/filename.jpg -> 从 images/filename.jpg 服务
+	imageServer := http.FileServer(http.Dir("images"))
+	mux.Handle("/images/", http.StripPrefix("/images/", imageServer))
+
 	// 获取 GIF 表情列表处理器
 	mux.HandleFunc("/emoji-gifs-list", func(w http.ResponseWriter, r *http.Request) {
 		// 读取嵌入的 emoji_gifs.json 文件
@@ -109,22 +115,26 @@ func (node *P2PNode) startWebGUI() {
 
 		if chatId == "all" {
 			query = `
-				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
-				FROM messages 
-				WHERE recipient = 'all' AND is_private = FALSE 
-				ORDER BY timestamp ASC 
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp,
+					   message_type, message_id, reply_to_id, reply_to_content, reply_to_sender,
+					   file_name, file_size, file_type, file_url, file_data
+				FROM messages
+				WHERE recipient = 'all' AND is_private = FALSE
+				ORDER BY timestamp ASC
 				LIMIT ? OFFSET ?
 			`
 			args = []interface{}{limit, offset}
 		} else {
 			query = `
-				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp 
-				FROM messages 
+				SELECT sender, recipient, content, nonce, is_private, is_own, timestamp,
+					   message_type, message_id, reply_to_id, reply_to_content, reply_to_sender,
+					   file_name, file_size, file_type, file_url, file_data
+				FROM messages
 				WHERE is_private = TRUE AND (
-					(sender = ? AND recipient = ?) OR 
+					(sender = ? AND recipient = ?) OR
 					(sender = ? AND recipient = ?)
-				) 
-				ORDER BY timestamp ASC 
+				)
+				ORDER BY timestamp ASC
 				LIMIT ? OFFSET ?
 			`
 			args = []interface{}{node.Name, chatId, chatId, node.Name, limit, offset}
@@ -148,8 +158,12 @@ func (node *P2PNode) startWebGUI() {
 			var content, nonce []byte
 			var isPrivate, isOwn bool
 			var tsStr string
+			var messageType, messageID, replyToID, replyToContent, replyToSender, fileName, fileType, fileURL, fileData string
+			var fileSize int64
 
-			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &tsStr)
+			err = rows.Scan(&sender, &recipient, &content, &nonce, &isPrivate, &isOwn, &tsStr,
+				&messageType, &messageID, &replyToID, &replyToContent, &replyToSender,
+				&fileName, &fileSize, &fileType, &fileURL, &fileData)
 			if err != nil {
 				continue
 			}
@@ -172,12 +186,21 @@ func (node *P2PNode) startWebGUI() {
 
 			hm := HistoryMsg{
 				ChatMessage: ChatMessage{
-					Sender:    sender,
-					Recipient: recipient,
-					Content:   string(plaintext),
-					Timestamp: ts,
-					IsOwn:     isOwn,
-					IsPrivate: isPrivate,
+					Sender:        sender,
+					Recipient:     recipient,
+					Content:       string(plaintext),
+					Timestamp:     ts,
+					IsOwn:         isOwn,
+					IsPrivate:     isPrivate,
+					MessageType:   messageType,
+					MessageID:     messageID,
+					ReplyToID:     replyToID,
+					ReplyToContent: replyToContent,
+					ReplyToSender: replyToSender,
+					FileName:      fileName,
+					FileSize:      fileSize,
+					FileType:      fileType,
+					FileURL:       fileURL,
 				},
 				SenderName: senderName,
 			}
@@ -337,6 +360,306 @@ func (node *P2PNode) startWebGUI() {
 		w.Write([]byte("文件传输请求已发送"))
 	})
 
+	// 发送图片处理器
+	mux.HandleFunc("/sendimage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// 解析multipart表单
+		err := r.ParseMultipartForm(10 << 20) // 10MB限制
+		if err != nil {
+			http.Error(w, "文件太大或格式错误", http.StatusBadRequest)
+			return
+		}
+
+		// 获取图片文件
+		file, handler, err := r.FormFile("image")
+		if err != nil {
+			http.Error(w, "无法获取图片文件", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		// 检查文件类型
+		contentType := handler.Header.Get("Content-Type")
+		if !strings.HasPrefix(contentType, "image/") {
+			http.Error(w, "只支持图片文件", http.StatusBadRequest)
+			return
+		}
+
+		// 检查文件大小（限制为5MB）
+		if handler.Size > 5<<20 {
+			http.Error(w, "图片文件不能超过5MB", http.StatusBadRequest)
+			return
+		}
+
+		// 获取目标用户
+		targetName := r.FormValue("targetName")
+		if targetName == "" {
+			http.Error(w, "请选择目标用户", http.StatusBadRequest)
+			return
+		}
+
+		// 创建images目录
+		imageDir := "images"
+		if err := os.MkdirAll(imageDir, 0755); err != nil {
+			http.Error(w, "无法创建图片目录", http.StatusInternalServerError)
+			return
+		}
+
+		// 生成唯一文件名
+		ext := filepath.Ext(handler.Filename)
+		if ext == "" {
+			ext = ".jpg" // 默认扩展名
+		}
+		imageFileName := fmt.Sprintf("%s_%d%s", generateMessageID(), time.Now().Unix(), ext)
+		imagePath := filepath.Join(imageDir, imageFileName)
+
+		// 保存图片文件
+		imageFile, err := os.Create(imagePath)
+		if err != nil {
+			http.Error(w, "无法保存图片文件", http.StatusInternalServerError)
+			return
+		}
+		defer imageFile.Close()
+
+		// 读取图片数据用于base64编码
+		imageData, err := io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "读取图片数据失败", http.StatusInternalServerError)
+			return
+		}
+
+		// 保存到文件
+		if _, err := imageFile.Write(imageData); err != nil {
+			http.Error(w, "保存图片失败", http.StatusInternalServerError)
+			return
+		}
+
+		// 编码为base64
+		imageBase64 := base64.StdEncoding.EncodeToString(imageData)
+
+		// 发送图片消息
+		imageURL := fmt.Sprintf("/images/%s", imageFileName)
+		messageID := generateMessageID()
+
+		// 创建图片消息
+		imageMsg := Message{
+			Type:        "chat",
+			From:        node.ID,
+			Content:     fmt.Sprintf("发送了图片: %s", handler.Filename),
+			Timestamp:   time.Now(),
+			MessageType: MessageTypeImage,
+			MessageID:   messageID,
+			FileName:    handler.Filename,
+			FileSize:    handler.Size,
+			FileType:    contentType,
+			FileURL:     imageURL,
+			FileData:    imageBase64, // 包含base64编码的图片数据
+		}
+
+		// 根据目标用户设置消息接收者
+		if targetName == "all" {
+			// 公聊消息
+			imageMsg.To = "all"
+			node.broadcastMessage(imageMsg)
+		} else {
+			// 私聊消息
+			// 查找目标用户ID
+			var targetID string
+			node.PeersMutex.RLock()
+			for id, peer := range node.Peers {
+				if peer.Name == targetName && peer.IsActive {
+					targetID = id
+					break
+				}
+			}
+			node.PeersMutex.RUnlock()
+
+			if targetID == "" {
+				http.Error(w, "目标用户不在线", http.StatusBadRequest)
+				return
+			}
+
+			imageMsg.To = targetID
+
+			// 发送消息
+			if peer, exists := node.Peers[targetID]; exists {
+				node.sendMessageToPeer(peer, imageMsg)
+			}
+		}
+
+		// 添加到本地消息列表
+		isPrivate := targetName != "all"
+		node.addChatMessageWithType(
+			node.Name, targetName, imageMsg.Content, true, isPrivate,
+			MessageTypeImage, messageID, "", "", "", handler.Filename, handler.Size, contentType, imageURL,
+		)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":   "success",
+			"imageUrl": imageURL,
+			"messageId": messageID,
+		})
+	})
+
+	// 发送文件消息处理器（用于文件预览）
+	mux.HandleFunc("/sendfilemsg", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TargetName string `json:"targetName"`
+			FileName   string `json:"fileName"`
+			FileSize   int64  `json:"fileSize"`
+			FileType   string `json:"fileType"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if req.TargetName == "" || req.FileName == "" {
+			http.Error(w, "缺少必要参数", http.StatusBadRequest)
+			return
+		}
+
+		// 查找目标用户ID
+		var targetID string
+		node.PeersMutex.RLock()
+		for id, peer := range node.Peers {
+			if peer.Name == req.TargetName && peer.IsActive {
+				targetID = id
+				break
+			}
+		}
+		node.PeersMutex.RUnlock()
+
+		if targetID == "" {
+			http.Error(w, "目标用户不在线", http.StatusBadRequest)
+			return
+		}
+
+		messageID := generateMessageID()
+		content := fmt.Sprintf("分享了文件: %s", req.FileName)
+
+		// 创建文件消息
+		fileMsg := Message{
+			Type:        "chat",
+			From:        node.ID,
+			To:          targetID,
+			Content:     content,
+			Timestamp:   time.Now(),
+			MessageType: MessageTypeFile,
+			MessageID:   messageID,
+			FileName:    req.FileName,
+			FileSize:    req.FileSize,
+			FileType:    req.FileType,
+		}
+
+		// 发送消息
+		if peer, exists := node.Peers[targetID]; exists {
+			node.sendMessageToPeer(peer, fileMsg)
+		}
+
+		// 添加到本地消息列表
+		isPrivate := targetID != "all"
+		node.addChatMessageWithType(
+			node.Name, req.TargetName, content, true, isPrivate,
+			MessageTypeFile, messageID, "", "", "", req.FileName, req.FileSize, req.FileType, "",
+		)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":    "success",
+			"messageId": messageID,
+		})
+	})
+
+	// 发送回复消息处理器
+	mux.HandleFunc("/sendreply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			TargetName     string `json:"targetName"`
+			ReplyContent   string `json:"replyContent"`
+			OriginalMsgID  string `json:"originalMsgId"`
+			OriginalSender string `json:"originalSender"`
+			OriginalContent string `json:"originalContent"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if req.TargetName == "" || req.ReplyContent == "" || req.OriginalMsgID == "" {
+			http.Error(w, "缺少必要参数", http.StatusBadRequest)
+			return
+		}
+
+		// 查找目标用户ID
+		var targetID string
+		node.PeersMutex.RLock()
+		for id, peer := range node.Peers {
+			if peer.Name == req.TargetName && peer.IsActive {
+				targetID = id
+				break
+			}
+		}
+		node.PeersMutex.RUnlock()
+
+		if targetID == "" {
+			http.Error(w, "目标用户不在线", http.StatusBadRequest)
+			return
+		}
+
+		messageID := generateMessageID()
+		content := req.ReplyContent
+
+		// 创建回复消息
+		replyMsg := Message{
+			Type:            "chat",
+			From:            node.ID,
+			To:              targetID,
+			Content:         content,
+			Timestamp:       time.Now(),
+			MessageType:     MessageTypeReply,
+			MessageID:       messageID,
+			ReplyToID:       req.OriginalMsgID,
+			ReplyToContent:  req.OriginalContent,
+			ReplyToSender:   req.OriginalSender,
+		}
+
+		// 发送消息
+		if peer, exists := node.Peers[targetID]; exists {
+			node.sendMessageToPeer(peer, replyMsg)
+		}
+
+		// 添加到本地消息列表
+		isPrivate := targetID != "all"
+		node.addChatMessageWithType(
+			node.Name, req.TargetName, content, true, isPrivate,
+			MessageTypeReply, messageID, req.OriginalMsgID, req.OriginalContent, req.OriginalSender,
+			"", 0, "", "",
+		)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":    "success",
+			"messageId": messageID,
+		})
+	})
+
 	// 获取文件传输列表处理器
 	mux.HandleFunc("/filetransfers", func(w http.ResponseWriter, r *http.Request) {
 		node.FileTransfersMutex.RLock()
@@ -481,23 +804,44 @@ func (node *P2PNode) handleWebMessage(text string) {
 	}
 }
 
-// 添加聊天消息
+// 添加聊天消息（扩展版）
 func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, isPrivate bool) {
+	node.addChatMessageWithType(sender, recipient, content, isOwn, isPrivate, MessageTypeText, "", "", "", "", "", 0, "", "")
+}
+
+// 添加聊天消息（完整版）
+func (node *P2PNode) addChatMessageWithType(sender, recipient, content string, isOwn, isPrivate bool,
+	messageType, messageID, replyToID, replyToContent, replyToSender, fileName string, fileSize int64, fileType, fileURL string) {
+
+	// 生成消息ID（如果未提供）
+	if messageID == "" {
+		messageID = generateMessageID()
+	}
+
 	if node.WebEnabled {
 		node.MessagesMutex.Lock()
 		defer node.MessagesMutex.Unlock()
-		
+
 		msg := ChatMessage{
-			Sender:    sender,
-			Recipient: recipient,
-			Content:   content,
-			Timestamp: time.Now(),
-			IsOwn:     isOwn,
-			IsPrivate: isPrivate,
+			Sender:        sender,
+			Recipient:     recipient,
+			Content:       content,
+			Timestamp:     time.Now(),
+			IsOwn:         isOwn,
+			IsPrivate:     isPrivate,
+			MessageType:   messageType,
+			MessageID:     messageID,
+			ReplyToID:     replyToID,
+			ReplyToContent: replyToContent,
+			ReplyToSender: replyToSender,
+			FileName:      fileName,
+			FileSize:      fileSize,
+			FileType:      fileType,
+			FileURL:       fileURL,
 		}
-		
+
 		node.Messages = append(node.Messages, msg)
-		
+
 		// 保持最近100条消息
 		if len(node.Messages) > 100 {
 			node.Messages = node.Messages[1:]
@@ -510,8 +854,15 @@ func (node *P2PNode) addChatMessage(sender, recipient, content string, isOwn, is
 		if err != nil {
 			fmt.Printf("加密消息失败: %v\n", err)
 		} else {
-			_, err = node.DB.Exec("INSERT INTO messages (sender, recipient, content, nonce, is_private, is_own) VALUES (?, ?, ?, ?, ?, ?)",
-				sender, recipient, ciphertext, nonce, isPrivate, isOwn)
+			_, err = node.DB.Exec(`
+				INSERT INTO messages (
+					sender, recipient, content, nonce, is_private, is_own,
+					message_type, message_id, reply_to_id, reply_to_content,
+					reply_to_sender, file_name, file_size, file_type, file_url, file_data
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				sender, recipient, ciphertext, nonce, isPrivate, isOwn,
+				messageType, messageID, replyToID, replyToContent,
+				replyToSender, fileName, fileSize, fileType, fileURL, "")
 			if err != nil {
 				fmt.Printf("保存消息到数据库失败: %v\n", err)
 			}

@@ -75,6 +75,7 @@ func (node *P2PNode) sendFileTransferRequest(filePath string, targetName string)
 		Status:    "pending",
 		Direction: "send",
 		PeerName:  targetName,
+		PeerID:    targetID, // 存储目标用户的peer ID
 		StartTime: time.Now(),
 	}
 	node.FileTransfersMutex.Unlock()
@@ -110,6 +111,7 @@ func (node *P2PNode) handleFileTransferRequest(request FileTransferRequest) {
 		Status:    "pending",
 		Direction: "receive",
 		PeerName:  node.getPeerName(request.From),
+		PeerID:    request.From, // 存储发送方的peer ID
 		StartTime: time.Now(),
 	}
 	node.FileTransfersMutex.Unlock()
@@ -281,7 +283,7 @@ func (node *P2PNode) sendFile(fileID string, filePath string) {
 		}
 
 		// 加密 chunk Data
-		if len(targetPeer.SharedKey) > 0 {
+		if len(targetPeer.SharedKey) == 32 {
 			ciphertext, nonce, err := encryptMessage([32]byte(targetPeer.SharedKey), chunkData)
 			if err == nil {
 				chunk.Encrypted = true
@@ -289,8 +291,15 @@ func (node *P2PNode) sendFile(fileID string, filePath string) {
 				chunk.Ciphertext = ciphertext
 				chunk.Data = nil // 清空明文
 			} else {
-				fmt.Printf("加密文件块失败: %v\n", err)
+				fmt.Printf("加密文件块失败: %v，将尝试不加密传输\n", err)
+				// 如果加密失败，保持明文传输
+				chunk.Encrypted = false
+				chunk.Data = chunkData
 			}
+		} else {
+			// 密钥无效，保持明文传输
+			chunk.Encrypted = false
+			chunk.Data = chunkData
 		}
 
 		msg := Message{
@@ -302,17 +311,19 @@ func (node *P2PNode) sendFile(fileID string, filePath string) {
 
 		if err := node.sendMessageToPeer(targetPeer, msg); err != nil {
 			fmt.Printf("发送文件块失败: %v\n", err)
-			// 可以在这里添加重试逻辑
+			// 标记传输失败
+			node.FileTransfersMutex.Lock()
+			if transfer, exists := node.FileTransfers[fileID]; exists {
+				transfer.Status = "failed"
+				transfer.EndTime = time.Now()
+				fmt.Printf("文件传输失败: %s\n", transfer.FileName)
+			}
+			node.FileTransfersMutex.Unlock()
 			return
 		}
 
 		// 更新进度
-		node.FileTransfersMutex.Lock()
-		if transfer, exists := node.FileTransfers[fileID]; exists {
-			transfer.Progress += int64(bytesRead)
-			transfer.Status = "transferring"
-		}
-		node.FileTransfersMutex.Unlock()
+		node.updateTransferProgress(fileID, int64(bytesRead))
 	}
 
 	// 发送完成
@@ -357,18 +368,33 @@ func (node *P2PNode) handleFileChunk(chunk FileChunk) {
 	var chunkData []byte
 	if chunk.Encrypted && len(chunk.Nonce) > 0 && len(chunk.Ciphertext) > 0 {
 		node.PeersMutex.RLock()
-		senderPeer, exists := node.Peers[transfer.PeerName] // 假设 PeerName 是 From ID
+		senderPeer, exists := node.Peers[transfer.PeerID] // 使用存储的peer ID查找发送方
 		node.PeersMutex.RUnlock()
+
 		if exists && len(senderPeer.SharedKey) > 0 {
 			plaintext, err := decryptMessage([32]byte(senderPeer.SharedKey), chunk.Ciphertext, chunk.Nonce)
 			if err == nil {
 				chunkData = plaintext
 			} else {
-				fmt.Printf("解密文件块失败: %v\n", err)
+				fmt.Printf("解密文件块失败: %v (文件: %s, 发送方: %s, PeerID: %s)\n",
+					err, transfer.FileName, transfer.PeerName, transfer.PeerID)
+				fmt.Printf("调试信息 - 密文长度: %d, Nonce长度: %d, 密钥长度: %d\n",
+					len(chunk.Ciphertext), len(chunk.Nonce), len(senderPeer.SharedKey))
 				return
 			}
 		} else {
-			fmt.Printf("无密钥解密文件块\n")
+			fmt.Printf("无密钥解密文件块 (文件: %s, PeerID: %s, Peer存在: %v, 有密钥: %v)\n",
+				transfer.FileName, transfer.PeerID, exists, exists && len(senderPeer.SharedKey) > 0)
+
+			// 列出所有可用的peers用于调试
+			node.PeersMutex.RLock()
+			fmt.Printf("可用Peers: ")
+			for id, peer := range node.Peers {
+				fmt.Printf("%s(%s, 密钥长度:%d) ", peer.Name, id, len(peer.SharedKey))
+			}
+			fmt.Printf("\n")
+			node.PeersMutex.RUnlock()
+
 			return
 		}
 	} else {
@@ -382,16 +408,53 @@ func (node *P2PNode) handleFileChunk(chunk FileChunk) {
 	}
 
 	// 更新进度
-	node.FileTransfersMutex.Lock()
-	transfer.Progress += int64(len(chunkData))
-	
+	node.updateTransferProgress(chunk.FileID, int64(len(chunkData)))
+
 	// 检查是否完成
+	node.FileTransfersMutex.Lock()
 	if transfer.Progress >= transfer.FileSize {
 		transfer.Status = "completed"
 		transfer.EndTime = time.Now()
 		fmt.Printf("\n文件接收完成: %s，已保存到 %s 目录\n", transfer.FileName, downloadDir)
 	}
 	node.FileTransfersMutex.Unlock()
+}
+
+// 更新文件传输状态（计算速度和ETA）
+func (node *P2PNode) updateTransferProgress(fileID string, bytesAdded int64) {
+	node.FileTransfersMutex.Lock()
+	defer node.FileTransfersMutex.Unlock()
+
+	transfer, exists := node.FileTransfers[fileID]
+	if !exists {
+		return
+	}
+
+	// 更新进度
+	transfer.Progress += bytesAdded
+	now := time.Now()
+
+	// 计算速度和ETA
+	if transfer.LastUpdateTime.IsZero() {
+		transfer.LastUpdateTime = transfer.StartTime
+	}
+
+	elapsed := now.Sub(transfer.LastUpdateTime).Seconds()
+	if elapsed > 0 {
+		// 计算瞬时速度（最近一段时间的速度）
+		transfer.Speed = float64(bytesAdded) / elapsed
+
+		// 计算ETA
+		remaining := transfer.FileSize - transfer.Progress
+		if transfer.Speed > 0 {
+			transfer.ETA = int64(float64(remaining) / transfer.Speed)
+		} else {
+			transfer.ETA = -1 // 无法计算
+		}
+	}
+
+	transfer.LastUpdateTime = now
+	transfer.Status = "transferring"
 }
 
 // 格式化文件大小
